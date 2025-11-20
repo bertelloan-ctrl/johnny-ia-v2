@@ -1,414 +1,468 @@
-import 'dotenv/config';
-import express from 'express';
-import ExpressWs from 'express-ws';
-import Twilio from 'twilio';
-import WebSocket from 'ws';
-import { createClient } from '@supabase/supabase-js';
+require('dotenv').config();
+const express = require('express');
+const { WebSocketServer } = require('ws');
+const { createClient } = require('@supabase/supabase-js');
 
-const app = express();
-ExpressWs(app);
-app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
+// ════════════════════════════════════════════════════════════
+// CONFIGURACIÓN
+// ════════════════════════════════════════════════════════════
 
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 3000;
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_KEY = process.env.SUPABASE_KEY;
+const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
+
+if (!OPENAI_API_KEY) throw new Error('Falta OPENAI_API_KEY');
+if (!SUPABASE_URL || !SUPABASE_KEY) throw new Error('Faltan credenciales de Supabase');
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-const VOICEMAIL_KEYWORDS = [
-  'buzón', 'buzon', 'mensaje', 'señal', 'tono', 'beep',
-  'voicemail', 'mailbox', 'leave a message', 'not available'
-];
+const app = express();
+app.use(express.json());
+app.use(express.urlencoded({ extended: false }));
 
-const IVR_KEYWORDS = {
-  compras: ['compra', 'compras', 'purchasing', 'procurement'],
-  ventas: ['venta', 'ventas', 'sales', 'comercial'],
-  operadora: ['operadora', 'operator', 'recepción', 'reception']
-};
-
-function buildSystemPrompt(clientConfig) {
-  return `Eres ${clientConfig.agent_name || 'Roberto'}, vendedor de ${clientConfig.company_name || 'la empresa'}.
-
-REGLAS CRÍTICAS:
-
-1. BUZÓN DE VOZ:
-   Si escuchas "buzón", "mensaje", "señal", di: [VOICEMAIL_DETECTED]
-
-2. IVR (MENÚS):
-   Si escuchas "para compras marque 2", responde: [DTMF:2]
-   Si no sabes qué marcar: [DTMF:0]
-
-3. PERSONA REAL:
-   Si alguien dice "bueno", "hola", "diga", di: [HUMAN_DETECTED]
-   Luego presenta: "${clientConfig.pitch || 'Ofrecemos soluciones de calidad'}"
-
-4. CAPTURA DE DATOS:
-   - Email: [EMAIL:texto]
-   - Teléfono: [PHONE:texto]
-   - Nombre: [NAME:texto]
-
-5. Si nadie contesta en 10 seg: [TIMEOUT]
-
-Habla natural en español mexicano. Sé breve.`;
-}
-
-const sessions = new Map();
-
-class CallSession {
-  constructor(callSid, streamSid, clientId, config) {
-    this.callSid = callSid;
-    this.streamSid = streamSid;
-    this.clientId = clientId;
-    this.config = config;
-    this.transcript = [];
-    this.capturedData = {};
-    this.startTime = Date.now();
-    this.voicemailDetected = false;
-    this.humanDetected = false;
-    this.dtmfSent = [];
-  }
-
-  addTranscript(speaker, text) {
-    this.transcript.push({ speaker, text, timestamp: Date.now() });
-    console.log(`${speaker === 'agent' ? '🤖' : '👤'}: "${text}"`);
-  }
-
-  detectVoicemail(text) {
-    const lower = text.toLowerCase();
-    const detected = VOICEMAIL_KEYWORDS.some(k => lower.includes(k));
-    if (detected) {
-      console.log('📭 BUZÓN DETECTADO');
-      this.voicemailDetected = true;
-    }
-    return detected;
-  }
-
-  detectHuman(text) {
-    const lower = text.toLowerCase();
-    if (lower.includes('bueno') || lower.includes('hola') || lower.includes('diga')) {
-      console.log('👨 PERSONA DETECTADA');
-      this.humanDetected = true;
-      return true;
-    }
-    return false;
-  }
-
-  detectIvrOption(text) {
-    const lower = text.toLowerCase();
-    const numberPattern = /(?:marque|presione|press)\s*(\d+)/gi;
-    let match;
-    const options = [];
-    
-    while ((match = numberPattern.exec(lower)) !== null) {
-      const number = match[1];
-      const before = lower.substring(Math.max(0, match.index - 50), match.index);
-      
-      if (IVR_KEYWORDS.compras.some(k => before.includes(k))) {
-        options.push({ number, priority: 1, type: 'compras' });
-      } else if (IVR_KEYWORDS.ventas.some(k => before.includes(k))) {
-        options.push({ number, priority: 2, type: 'ventas' });
-      } else if (IVR_KEYWORDS.operadora.some(k => before.includes(k))) {
-        options.push({ number, priority: 3, type: 'operadora' });
-      }
-    }
-
-    if (options.length > 0) {
-      options.sort((a, b) => a.priority - b.priority);
-      console.log(`🎯 IVR: Marcar ${options[0].number} (${options[0].type})`);
-      return { action: 'dtmf', digit: options[0].number };
-    }
-    return null;
-  }
-
-  extractData(text) {
-    const emailMatch = text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/);
-    if (emailMatch) {
-      this.capturedData.email = emailMatch[0];
-      console.log('📧 Email:', emailMatch[0]);
-    }
-
-    const phoneMatch = text.match(/(?:\+?52\s*)?(?:\d[\s.-]*){10,}/);
-    if (phoneMatch) {
-      this.capturedData.phone = phoneMatch[0].replace(/[^\d]/g, '');
-      console.log('📞 Teléfono:', this.capturedData.phone);
-    }
-  }
-
-  async saveToDatabase() {
-    try {
-      const duration = Math.floor((Date.now() - this.startTime) / 1000);
-      
-      const { error } = await supabase
-        .from('call_transcripts')
-        .insert({
-          call_sid: this.callSid,
-          client_id: this.clientId,
-          transcript: this.transcript,
-          captured_data: this.capturedData,
-          voicemail_detected: this.voicemailDetected,
-          human_detected: this.humanDetected,
-          duration_seconds: duration,
-          status: this.voicemailDetected ? 'voicemail' : (this.humanDetected ? 'completed' : 'failed'),
-          created_at: new Date().toISOString()
-        });
-
-      if (error) {
-        console.error('❌ Error guardando:', error);
-      } else {
-        console.log('✅ Guardado en BD');
-      }
-    } catch (err) {
-      console.error('❌ Error:', err);
-    }
-  }
-}
-
-app.post('/incoming-call', async (req, res) => {
-  const callSid = req.body.CallSid;
-  const from = req.body.From;
-  const clientId = req.query.client_id || 'unknown';
-  
-  console.log('📞 Llamada entrante:', from);
-
-  const response = new Twilio.twiml.VoiceResponse();
-  const connect = response.connect();
-  
-  connect.stream({
-    url: `wss://${req.headers.host}/media-stream?client_id=${clientId}`
-  });
-
-  res.type('text/xml');
-  res.send(response.toString());
+const server = app.listen(PORT, () => {
+  console.log(`🚀 Servidor escuchando en puerto ${PORT}`);
+  console.log('📞 Endpoint Twilio: /incoming-call');
 });
 
-app.ws('/media-stream', async (ws, req) => {
-  console.log('🔵 WebSocket conectado');
-  
-  const clientId = req.query.client_id || 'unknown';
-  let callSid = null;
-  let streamSid = null;
-  let session = null;
-  let openAiWs = null;
+const wss = new WebSocketServer({ server });
 
-  let clientConfig = {};
+// ════════════════════════════════════════════════════════════
+// ESTADO DE LLAMADAS
+// ════════════════════════════════════════════════════════════
+
+const activeCalls = new Map();
+
+// ════════════════════════════════════════════════════════════
+// FUNCIONES DE SUPABASE
+// ════════════════════════════════════════════════════════════
+
+async function loadClientConfig(clientId) {
   try {
-    const { data } = await supabase
+    const { data, error } = await supabase
       .from('johnny_clients')
       .select('*')
       .eq('client_id', clientId)
       .single();
+    
+    if (error) {
+      console.error('❌ Error cargando config:', error);
+      return null;
+    }
+    
+    console.log(`✅ Configuración cargada para ${clientId}:`, data.company_name);
+    return data;
+  } catch (err) {
+    console.error('❌ Error en loadClientConfig:', err);
+    return null;
+  }
+}
 
-    if (data) {
-      clientConfig = data.config || {};
-      console.log(`✅ Config: ${clientConfig.company_name || clientId}`);
+async function saveTranscript(callSid, clientId, transcript, capturedData, status) {
+  try {
+    const { error } = await supabase
+      .from('call_transcripts')
+      .upsert({
+        call_sid: callSid,
+        client_id: clientId,
+        transcript: transcript,
+        captured_data: capturedData,
+        status: status,
+        voicemail_detected: capturedData.voicemail_detected || false,
+        human_detected: capturedData.human_detected || false,
+        duration_seconds: capturedData.duration_seconds || 0
+      }, {
+        onConflict: 'call_sid'
+      });
+    
+    if (error) {
+      console.error('❌ Error guardando transcript:', error);
+    } else {
+      console.log(`✅ Transcript guardado para ${callSid}`);
     }
   } catch (err) {
-    console.error('⚠️ Error config:', err.message);
+    console.error('❌ Error en saveTranscript:', err);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// DETECCIÓN DE PATRONES
+// ════════════════════════════════════════════════════════════
+
+const IVR_PATTERNS = [
+  /marque|presione|oprima/i,
+  /para\s+(hablar|ventas|compras|información)/i,
+  /extensión|departamento/i,
+  /gracias\s+por\s+llamar/i,
+  /menu|opciones/i
+];
+
+const VOICEMAIL_PATTERNS = [
+  /buzón\s+de\s+voz/i,
+  /deje\s+(su\s+)?mensaje/i,
+  /después\s+del\s+tono/i,
+  /no\s+(estamos|está)\s+disponible/i,
+  /leave\s+a\s+message/i
+];
+
+function detectIVR(text) {
+  return IVR_PATTERNS.some(pattern => pattern.test(text));
+}
+
+function detectVoicemail(text) {
+  return VOICEMAIL_PATTERNS.some(pattern => pattern.test(text));
+}
+
+// ════════════════════════════════════════════════════════════
+// CONSTRUCCIÓN DE PROMPT DINÁMICO
+// ════════════════════════════════════════════════════════════
+
+function buildSystemPrompt(config) {
+  if (!config) {
+    return `Eres un asistente de ventas profesional. Mantén conversaciones naturales y captura datos de contacto.`;
   }
 
-  const openAiUrl = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17';
+  const productsText = config.products ? config.products.join(', ') : 'nuestros productos';
+  const minOrder = config.conditions?.min_order || 'consultar';
+  const pricing = config.conditions?.pricing || 'según volumen';
+  const deliveryTime = config.conditions?.delivery_time || 'según pedido';
+
+  return `Eres ${config.agent_name || 'Roberto'}, vendedor profesional de ${config.company_name}.
+
+TU EMPRESA:
+- Industria: ${config.industry}
+- Productos principales: ${productsText}
+- Propuesta de valor: ${config.value_proposition || 'Calidad y servicio garantizado'}
+
+CONDICIONES COMERCIALES:
+- Precios: ${pricing}
+- Pedido mínimo: ${minOrder}
+- Tiempo de entrega: ${deliveryTime}
+- Zona de cobertura: ${config.conditions?.coverage || 'Nacional'}
+
+OBJETIVO DE LA LLAMADA:
+${config.sales_goal === 'agendar_demo' ? 'Agendar una demostración o reunión' : 'Capturar interés y datos de contacto'}
+
+TONO Y ESTILO:
+- Sé ${config.tone || 'profesional y amigable'}
+- Habla de manera natural y conversacional
+- NO uses frases robóticas como "¿en qué puedo ayudarte?"
+- Adapta tu lenguaje al contexto mexicano (usted/tú según la situación)
+
+REGLAS CRÍTICAS:
+1. Si la persona dice algo como "¿quién habla?" o "¿de dónde llama?", responde naturalmente: "Hola, habla ${config.agent_name || 'Roberto'} de ${config.company_name}"
+2. Si preguntan por el departamento, menciona que buscas al área de compras o al responsable de ${config.industry}
+3. Si detectas que es un IVR (sistema automatizado), NO hables, espera instrucciones
+4. Si detectas un buzón de voz, cuelga inmediatamente
+5. Captura SIEMPRE: nombre, empresa, email, teléfono, nivel de interés
+
+DATOS A CAPTURAR:
+- Nombre completo
+- Empresa
+- Email (CRÍTICO)
+- Teléfono
+- Puesto o rol
+- Volumen aproximado de compra
+- Nivel de interés (alto/medio/bajo)
+
+${config.additional_instructions || ''}
+
+Ahora, inicia la conversación de manera natural cuando detectes que alguien responde.`;
+}
+
+// ════════════════════════════════════════════════════════════
+// ENDPOINT TWILIO
+// ════════════════════════════════════════════════════════════
+
+app.post('/incoming-call', async (req, res) => {
+  const callSid = req.body.CallSid;
+  const clientId = req.query.client_id || 'allopack__001'; // Parámetro en la URL de Twilio
   
-  openAiWs = new WebSocket(openAiUrl, {
-    headers: {
-      'Authorization': `Bearer ${OPENAI_API_KEY}`,
-      'OpenAI-Beta': 'realtime=v1'
-    }
+  console.log(`📞 Llamada entrante: ${callSid} | Cliente: ${clientId}`);
+  
+  // Cargar configuración del cliente
+  const config = await loadClientConfig(clientId);
+  
+  if (!config) {
+    console.error('❌ No se pudo cargar la configuración del cliente');
+    return res.status(500).send('Error de configuración');
+  }
+
+  activeCalls.set(callSid, {
+    callSid,
+    clientId,
+    config,
+    transcript: [],
+    capturedData: {},
+    startTime: Date.now(),
+    ivrDetected: false,
+    voicemailDetected: false,
+    humanDetected: false,
+    streamSid: null
   });
 
-  openAiWs.on('open', () => {
-    console.log('✅ OpenAI conectado');
-    
-    const sessionConfig = {
-      type: 'session.update',
-      session: {
-        turn_detection: { type: 'server_vad' },
-        input_audio_format: 'g711_ulaw',
-        output_audio_format: 'g711_ulaw',
-        voice: 'sage',
-        instructions: buildSystemPrompt(clientConfig),
-        modalities: ['text', 'audio'],
-        temperature: 0.7,
-      }
-    };
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="wss://${req.headers.host}/media-stream">
+      <Parameter name="callSid" value="${callSid}"/>
+      <Parameter name="clientId" value="${clientId}"/>
+    </Stream>
+  </Connect>
+</Response>`;
 
-    openAiWs.send(JSON.stringify(sessionConfig));
-  });
+  res.type('text/xml').send(twiml);
+});
 
-  openAiWs.on('message', (data) => {
-    try {
-      const event = JSON.parse(data);
+// ════════════════════════════════════════════════════════════
+// WEBSOCKET - TWILIO MEDIA STREAM
+// ════════════════════════════════════════════════════════════
 
-      if (event.type === 'response.audio.delta' && event.delta) {
-        const audioPayload = {
-          event: 'media',
-          streamSid: streamSid,
-          media: { payload: event.delta }
-        };
-        ws.send(JSON.stringify(audioPayload));
-      }
+wss.on('connection', async (twilioWs, req) => {
+  console.log('🔌 Cliente Twilio conectado');
 
-      else if (event.type === 'response.audio_transcript.delta') {
-        const text = event.delta || '';
-        process.stdout.write(text);
-        
-        if (session) {
-          if (text.includes('[VOICEMAIL_DETECTED]')) {
-            console.log('\n📭 Comando: COLGAR');
-            session.voicemailDetected = true;
-            setTimeout(() => hangupCall(callSid), 500);
-          }
-          else if (text.includes('[DTMF:')) {
-            const match = text.match(/\[DTMF:(\d+)\]/);
-            if (match) {
-              const digit = match[1];
-              console.log(`\n🔢 Comando: DTMF ${digit}`);
-              sendDtmf(callSid, digit);
-              session.dtmfSent.push(digit);
-            }
-          }
-          else if (text.includes('[HUMAN_DETECTED]')) {
-            console.log('\n👨 Comando: PERSONA');
-            session.humanDetected = true;
-          }
-        }
-      }
+  let openaiWs = null;
+  let callSid = null;
+  let callState = null;
+  let streamSid = null;
 
-      else if (event.type === 'response.audio_transcript.done') {
-        const fullText = event.transcript || '';
-        if (session && fullText) {
-          session.addTranscript('agent', fullText);
-          session.extractData(fullText);
-        }
-      }
-
-      else if (event.type === 'conversation.item.input_audio_transcription.completed') {
-        const text = event.transcript || '';
-        console.log(`\n👤 Cliente: "${text}"`);
-        
-        if (session && text) {
-          session.addTranscript('client', text);
-          
-          if (session.detectVoicemail(text)) {
-            setTimeout(() => hangupCall(callSid), 1000);
-            return;
-          }
-
-          session.detectHuman(text);
-
-          const ivrAction = session.detectIvrOption(text);
-          if (ivrAction && ivrAction.action === 'dtmf') {
-            setTimeout(() => {
-              sendDtmf(callSid, ivrAction.digit);
-              session.dtmfSent.push(ivrAction.digit);
-            }, 1000);
-          }
-
-          session.extractData(text);
-        }
-      }
-
-    } catch (err) {
-      console.error('⚠️ Error OpenAI:', err.message);
-    }
-  });
-
-  ws.on('message', async (message) => {
+  twilioWs.on('message', async (message) => {
     try {
       const msg = JSON.parse(message);
 
       if (msg.event === 'start') {
         callSid = msg.start.callSid;
         streamSid = msg.start.streamSid;
-        
-        console.log('🎙️ Stream:', streamSid);
+        callState = activeCalls.get(callSid);
 
-        session = new CallSession(callSid, streamSid, clientId, clientConfig);
-        sessions.set(callSid, session);
+        if (!callState) {
+          console.error('❌ No se encontró estado de llamada para:', callSid);
+          return;
+        }
+
+        callState.streamSid = streamSid;
+        console.log(`📞 Stream iniciado: ${streamSid}`);
+
+        // Conectar con OpenAI Realtime API
+        await connectToOpenAI(callState, twilioWs);
       }
 
-      else if (msg.event === 'media' && openAiWs && openAiWs.readyState === WebSocket.OPEN) {
-        const audioAppend = {
+      if (msg.event === 'media' && openaiWs && openaiWs.readyState === 1) {
+        const audioPayload = {
           type: 'input_audio_buffer.append',
           audio: msg.media.payload
         };
-        openAiWs.send(JSON.stringify(audioAppend));
+        openaiWs.send(JSON.stringify(audioPayload));
       }
 
-      else if (msg.event === 'stop') {
-        console.log('🛑 Stream detenido');
+      if (msg.event === 'stop') {
+        console.log('📞 Stream detenido');
+        if (openaiWs) openaiWs.close();
         
-        if (session) {
-          console.log('📊 Duración:', Math.floor((Date.now() - session.startTime) / 1000), 's');
-          console.log('📭 Buzón:', session.voicemailDetected);
-          console.log('👨 Persona:', session.humanDetected);
-          console.log('📧 Datos:', session.capturedData);
-
-          await session.saveToDatabase();
-          sessions.delete(callSid);
+        // Guardar transcript final
+        if (callState) {
+          const duration = Math.floor((Date.now() - callState.startTime) / 1000);
+          callState.capturedData.duration_seconds = duration;
+          
+          await saveTranscript(
+            callSid,
+            callState.clientId,
+            callState.transcript,
+            callState.capturedData,
+            callState.humanDetected ? 'completed' : 'no_answer'
+          );
         }
-
-        if (openAiWs) {
-          openAiWs.close();
-        }
+        
+        activeCalls.delete(callSid);
       }
 
     } catch (err) {
-      console.error('⚠️ Error Twilio:', err.message);
+      console.error('❌ Error procesando mensaje de Twilio:', err);
     }
   });
 
-  ws.on('close', () => {
-    console.log('🔌 WebSocket cerrado');
-    if (session) {
-      session.saveToDatabase();
-    }
-    if (openAiWs) {
-      openAiWs.close();
-    }
-  });
-});
+  async function connectToOpenAI(callState, twilioWs) {
+    const WebSocket = require('ws');
+    const url = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01';
 
-async function sendDtmf(callSid, digits) {
-  try {
-    const accountSid = process.env.TWILIO_ACCOUNT_SID;
-    const authToken = process.env.TWILIO_AUTH_TOKEN;
-    const client = new Twilio(accountSid, authToken);
-
-    await client.calls(callSid).update({
-      twiml: `<Response><Play digits="${digits}"/><Pause length="2"/></Response>`
+    openaiWs = new WebSocket(url, {
+      headers: {
+        'Authorization': `Bearer ${OPENAI_API_KEY}`,
+        'OpenAI-Beta': 'realtime=v1'
+      }
     });
 
-    console.log(`🔢 DTMF "${digits}" enviado`);
-  } catch (err) {
-    console.error('❌ Error DTMF:', err.message);
+    openaiWs.on('open', () => {
+      console.log('✅ Conectado a OpenAI Realtime API');
+
+      const sessionUpdate = {
+        type: 'session.update',
+        session: {
+          modalities: ['text', 'audio'],
+          instructions: buildSystemPrompt(callState.config),
+          voice: 'alloy',
+          input_audio_format: 'g711_ulaw',
+          output_audio_format: 'g711_ulaw',
+          input_audio_transcription: { model: 'whisper-1' },
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 500
+          },
+          temperature: 0.7,
+          max_response_output_tokens: 1000
+        }
+      };
+
+      openaiWs.send(JSON.stringify(sessionUpdate));
+      console.log('⚙️ Sesión de OpenAI configurada');
+    });
+
+    openaiWs.on('message', async (data) => {
+      try {
+        const event = JSON.parse(data);
+
+        // TRANSCRIPCIONES DEL CLIENTE
+        if (event.type === 'conversation.item.input_audio_transcription.completed') {
+          const transcript = event.transcript.trim();
+          console.log(`👤 Cliente: ${transcript}`);
+          
+          callState.transcript.push({
+            role: 'user',
+            content: transcript,
+            timestamp: new Date().toISOString()
+          });
+
+          // Detección de IVR
+          if (!callState.humanDetected && detectIVR(transcript)) {
+            callState.ivrDetected = true;
+            console.log('🤖 [IVR DETECTADO] - Sistema automatizado identificado');
+            // Aquí podrías implementar lógica de navegación de IVR
+          }
+
+          // Detección de buzón de voz
+          if (detectVoicemail(transcript)) {
+            callState.voicemailDetected = true;
+            callState.capturedData.voicemail_detected = true;
+            console.log('📬 [VOICEMAIL] - Buzón detectado, colgando...');
+            
+            twilioWs.send(JSON.stringify({
+              event: 'clear',
+              streamSid: callState.streamSid
+            }));
+            
+            openaiWs.close();
+            return;
+          }
+
+          // Detección de persona real (cualquier respuesta coherente)
+          if (!callState.humanDetected && transcript.length > 5) {
+            callState.humanDetected = true;
+            callState.capturedData.human_detected = true;
+            console.log('✅ [PERSONA DETECTADA] - Iniciando conversación');
+          }
+        }
+
+        // RESPUESTAS DEL AGENTE (TEXTO)
+        if (event.type === 'response.done' && event.response.output) {
+          for (const output of event.response.output) {
+            if (output.type === 'message' && output.content) {
+              for (const content of output.content) {
+                if (content.type === 'text') {
+                  const agentText = content.text;
+                  console.log(`🤖 Agente: ${agentText}`);
+                  
+                  callState.transcript.push({
+                    role: 'assistant',
+                    content: agentText,
+                    timestamp: new Date().toISOString()
+                  });
+
+                  // Extraer datos capturados usando regex simple
+                  extractCapturedData(agentText, callState.capturedData);
+                }
+              }
+            }
+          }
+        }
+
+        // AUDIO DEL AGENTE
+        if (event.type === 'response.audio.delta' && event.delta) {
+          const audioPayload = {
+            event: 'media',
+            streamSid: callState.streamSid,
+            media: { payload: event.delta }
+          };
+          twilioWs.send(JSON.stringify(audioPayload));
+        }
+
+      } catch (err) {
+        console.error('❌ Error procesando evento de OpenAI:', err);
+      }
+    });
+
+    openaiWs.on('error', (error) => {
+      console.error('❌ Error en WebSocket de OpenAI:', error);
+    });
+
+    openaiWs.on('close', () => {
+      console.log('🔌 Desconectado de OpenAI');
+    });
   }
-}
 
-async function hangupCall(callSid) {
-  try {
-    const accountSid = process.env.TWILIO_ACCOUNT_SID;
-    const authToken = process.env.TWILIO_AUTH_TOKEN;
-    const client = new Twilio(accountSid, authToken);
-
-    await client.calls(callSid).update({ status: 'completed' });
-    console.log(`📴 Llamada colgada`);
-  } catch (err) {
-    console.error('❌ Error colgar:', err.message);
-  }
-}
-
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(),
-    activeSessions: sessions.size
+  twilioWs.on('close', () => {
+    console.log('🔌 Cliente Twilio desconectado');
+    if (openaiWs) openaiWs.close();
   });
 });
 
-app.listen(PORT, () => {
-  console.log('🚀 VENDEDOR IA V2');
-  console.log(`🌐 Puerto ${PORT}`);
-  console.log('✅ Detección: buzón, IVR, persona');
+// ════════════════════════════════════════════════════════════
+// EXTRACCIÓN DE DATOS
+// ════════════════════════════════════════════════════════════
+
+function extractCapturedData(text, capturedData) {
+  // Email
+  const emailMatch = text.match(/[\w.-]+@[\w.-]+\.\w+/);
+  if (emailMatch && !capturedData.email) {
+    capturedData.email = emailMatch[0];
+    console.log(`📧 Email capturado: ${capturedData.email}`);
+  }
+
+  // Teléfono
+  const phoneMatch = text.match(/(?:\+?52)?[\s-]?\(?\d{2,3}\)?[\s-]?\d{3,4}[\s-]?\d{4}/);
+  if (phoneMatch && !capturedData.phone) {
+    capturedData.phone = phoneMatch[0].replace(/\D/g, '');
+    console.log(`📞 Teléfono capturado: ${capturedData.phone}`);
+  }
+
+  // Nombre (patrón simple: "Mi nombre es X" o "Soy X")
+  const nameMatch = text.match(/(?:mi nombre es|me llamo|soy)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)/i);
+  if (nameMatch && !capturedData.name) {
+    capturedData.name = nameMatch[1];
+    console.log(`👤 Nombre capturado: ${capturedData.name}`);
+  }
+
+  // Empresa
+  const companyMatch = text.match(/(?:trabajo en|empresa|compañía)\s+([A-Z][a-zA-Z\s]+)/i);
+  if (companyMatch && !capturedData.company) {
+    capturedData.company = companyMatch[1].trim();
+    console.log(`🏢 Empresa capturada: ${capturedData.company}`);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// HEALTH CHECK
+// ════════════════════════════════════════════════════════════
+
+app.get('/health', (req, res) => {
+  res.json({
+    status: 'OK',
+    activeCalls: activeCalls.size,
+    timestamp: new Date().toISOString()
+  });
 });
+
+console.log('✅ Servidor iniciado correctamente');
