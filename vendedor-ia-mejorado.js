@@ -1,7 +1,7 @@
-require('dotenv').config();
-const express = require('express');
-const { WebSocketServer } = require('ws');
-const { createClient } = require('@supabase/supabase-js');
+import 'dotenv/config';
+import express from 'express';
+import { WebSocketServer } from 'ws';
+import { createClient } from '@supabase/supabase-js';
 
 // ════════════════════════════════════════════════════════════
 // CONFIGURACIÓN
