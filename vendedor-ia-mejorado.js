@@ -284,7 +284,7 @@ wss.on('connection', async (twilioWs, req) => {
   });
 
   async function connectToOpenAI(callState, twilioWs) {
-    const WebSocket = require('ws');
+    import WebSocket from 'ws';
     const url = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01';
 
     openaiWs = new WebSocket(url, {
