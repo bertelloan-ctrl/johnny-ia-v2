@@ -3,6 +3,7 @@ import express from 'express';
 import WebSocket from 'ws';
 import { WebSocketServer } from 'ws';
 import { createClient } from '@supabase/supabase-js';
+import Twilio from 'twilio';
 
 // ════════════════════════════════════════════════════════════
 // CONFIGURACIÓN
@@ -13,11 +14,15 @@ const PORT = process.env.PORT || 3000;
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY;
+const TWILIO_ACCOUNT_SID = process.env.TWILIO_ACCOUNT_SID;
+const TWILIO_AUTH_TOKEN = process.env.TWILIO_AUTH_TOKEN;
 
 if (!OPENAI_API_KEY) throw new Error('Falta OPENAI_API_KEY');
 if (!SUPABASE_URL || !SUPABASE_KEY) throw new Error('Faltan credenciales de Supabase');
+if (!TWILIO_ACCOUNT_SID || !TWILIO_AUTH_TOKEN) throw new Error('Faltan credenciales de Twilio');
 
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+const twilioClient = new Twilio(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN);
 
 const app = express();
 app.use(express.json());
@@ -29,6 +34,7 @@ const server = app.listen(PORT, () => {
 });
 
 const wss = new WebSocketServer({ server });
+
 // ════════════════════════════════════════════════════════════
 // ESTADO DE LLAMADAS
 // ════════════════════════════════════════════════════════════
@@ -84,6 +90,19 @@ async function saveTranscript(callSid, clientId, transcript, capturedData, statu
     }
   } catch (err) {
     console.error('❌ Error en saveTranscript:', err);
+  }
+}
+
+// ════════════════════════════════════════════════════════════
+// FUNCIÓN PARA COLGAR LLAMADAS
+// ════════════════════════════════════════════════════════════
+
+async function hangupCall(callSid) {
+  try {
+    await twilioClient.calls(callSid).update({ status: 'completed' });
+    console.log(`📴 Llamada colgada: ${callSid}`);
+  } catch (err) {
+    console.error('❌ Error colgando llamada:', err);
   }
 }
 
@@ -157,6 +176,7 @@ REGLAS CRÍTICAS:
 3. Si detectas que es un IVR (sistema automatizado), NO hables, espera instrucciones
 4. Si detectas un buzón de voz, cuelga inmediatamente
 5. Captura SIEMPRE: nombre, empresa, email, teléfono, nivel de interés
+6. Cuando termines la conversación y te despidas, di "hasta luego" o "que tengas buen día"
 
 DATOS A CAPTURAR:
 - Nombre completo
@@ -178,11 +198,10 @@ Ahora, inicia la conversación de manera natural cuando detectes que alguien res
 
 app.post('/incoming-call', async (req, res) => {
   const callSid = req.body.CallSid;
-  const clientId = req.query.client_id || 'allopack__001'; // Parámetro en la URL de Twilio
+  const clientId = req.query.client_id || 'allopack__001';
   
   console.log(`📞 Llamada entrante: ${callSid} | Cliente: ${clientId}`);
   
-  // Cargar configuración del cliente
   const config = await loadClientConfig(clientId);
   
   if (!config) {
@@ -200,7 +219,8 @@ app.post('/incoming-call', async (req, res) => {
     ivrDetected: false,
     voicemailDetected: false,
     humanDetected: false,
-    streamSid: null
+    streamSid: null,
+    conversationEnded: false
   });
 
   const twiml = `<?xml version="1.0" encoding="UTF-8"?>
@@ -245,7 +265,6 @@ wss.on('connection', async (twilioWs, req) => {
         callState.streamSid = streamSid;
         console.log(`📞 Stream iniciado: ${streamSid}`);
 
-        // Conectar con OpenAI Realtime API
         await connectToOpenAI(callState, twilioWs);
       }
 
@@ -261,7 +280,6 @@ wss.on('connection', async (twilioWs, req) => {
         console.log('📞 Stream detenido');
         if (openaiWs) openaiWs.close();
         
-        // Guardar transcript final
         if (callState) {
           const duration = Math.floor((Date.now() - callState.startTime) / 1000);
           callState.capturedData.duration_seconds = duration;
@@ -334,24 +352,24 @@ wss.on('connection', async (twilioWs, req) => {
             content: transcript,
             timestamp: new Date().toISOString()
           });
-// Detectar despedida del cliente
-const despedidasCliente = ['hasta luego', 'adiós', 'adios', 'nos hablamos', 'te marco después', 'hablamos luego', 'bye', 'chao'];
-const clientText = transcript.toLowerCase();
-const clienteDespidio = despedidasCliente.some(d => clientText.includes(d));
 
-if (clienteDespidio && !conversationEnded) {
-  console.log('👋 Cliente se despidió - Colgando en 2 segundos');
-  conversationEnded = true;
-  setTimeout(() => {
-    hangupCall();
-  }, 2000);
-}
+          // Detectar despedida del cliente
+          const despedidasCliente = ['hasta luego', 'adiós', 'adios', 'nos hablamos', 'te marco después', 'hablamos luego', 'bye', 'chao', 'gracias', 'ok gracias'];
+          const clientText = transcript.toLowerCase();
+          const clienteDespidio = despedidasCliente.some(d => clientText.includes(d));
+
+          if (clienteDespidio && !callState.conversationEnded) {
+            console.log('👋 Cliente se despidió - Colgando en 2 segundos');
+            callState.conversationEnded = true;
+            setTimeout(async () => {
+              await hangupCall(callState.callSid);
+            }, 2000);
+          }
 
           // Detección de IVR
           if (!callState.humanDetected && detectIVR(transcript)) {
             callState.ivrDetected = true;
             console.log('🤖 [IVR DETECTADO] - Sistema automatizado identificado');
-            // Aquí podrías implementar lógica de navegación de IVR
           }
 
           // Detección de buzón de voz
@@ -360,16 +378,13 @@ if (clienteDespidio && !conversationEnded) {
             callState.capturedData.voicemail_detected = true;
             console.log('📬 [VOICEMAIL] - Buzón detectado, colgando...');
             
-            twilioWs.send(JSON.stringify({
-              event: 'clear',
-              streamSid: callState.streamSid
-            }));
+            await hangupCall(callState.callSid);
             
-            openaiWs.close();
+            if (openaiWs) openaiWs.close();
             return;
           }
 
-          // Detección de persona real (cualquier respuesta coherente)
+          // Detección de persona real
           if (!callState.humanDetected && transcript.length > 5) {
             callState.humanDetected = true;
             callState.capturedData.human_detected = true;
@@ -385,33 +400,37 @@ if (clienteDespidio && !conversationEnded) {
                 if (content.type === 'text') {
                   const agentText = content.text;
                   console.log(`🤖 Agente: ${agentText}`);
-// Detectar buzón de voz
-if (agentText.includes('[VOICEMAIL_DETECTED]')) {
-  console.log('📭 Buzón detectado - Colgando');
-  conversationEnded = true;
-  hangupCall();
-}
-        // Detectar despedidas del agente
-const despedidas = [
-  'gracias por tu tiempo',
-  'que tengas buen día',
-  'hasta luego',
-  'nos vemos',
-  'adiós',
-  'fue un placer',
-  'estaremos en contacto',
-  'te mando la información'
-];
 
-const isDespedida = despedidas.some(d => agentText.toLowerCase().includes(d));
+                  // Detectar buzón de voz en respuesta del agente
+                  if (agentText.includes('[VOICEMAIL_DETECTED]')) {
+                    console.log('📭 Buzón detectado - Colgando');
+                    callState.conversationEnded = true;
+                    await hangupCall(callState.callSid);
+                  }
 
-if (isDespedida && !conversationEnded) {
-  console.log('👋 Despedida detectada - Colgando en 3 segundos');
-  conversationEnded = true;
-  setTimeout(() => {
-    hangupCall();
-  }, 3000);
-}
+                  // Detectar despedidas del agente
+                  const despedidas = [
+                    'gracias por tu tiempo',
+                    'que tengas buen día',
+                    'hasta luego',
+                    'nos vemos',
+                    'adiós',
+                    'fue un placer',
+                    'estaremos en contacto',
+                    'te mando la información',
+                    'te envío',
+                    'nos hablamos'
+                  ];
+
+                  const isDespedida = despedidas.some(d => agentText.toLowerCase().includes(d));
+
+                  if (isDespedida && !callState.conversationEnded) {
+                    console.log('👋 Despedida detectada - Colgando en 3 segundos');
+                    callState.conversationEnded = true;
+                    setTimeout(async () => {
+                      await hangupCall(callState.callSid);
+                    }, 3000);
+                  }
                   
                   callState.transcript.push({
                     role: 'assistant',
@@ -419,7 +438,6 @@ if (isDespedida && !conversationEnded) {
                     timestamp: new Date().toISOString()
                   });
 
-                  // Extraer datos capturados usando regex simple
                   extractCapturedData(agentText, callState.capturedData);
                 }
               }
@@ -462,28 +480,24 @@ if (isDespedida && !conversationEnded) {
 // ════════════════════════════════════════════════════════════
 
 function extractCapturedData(text, capturedData) {
-  // Email
   const emailMatch = text.match(/[\w.-]+@[\w.-]+\.\w+/);
   if (emailMatch && !capturedData.email) {
     capturedData.email = emailMatch[0];
     console.log(`📧 Email capturado: ${capturedData.email}`);
   }
 
-  // Teléfono
   const phoneMatch = text.match(/(?:\+?52)?[\s-]?\(?\d{2,3}\)?[\s-]?\d{3,4}[\s-]?\d{4}/);
   if (phoneMatch && !capturedData.phone) {
     capturedData.phone = phoneMatch[0].replace(/\D/g, '');
     console.log(`📞 Teléfono capturado: ${capturedData.phone}`);
   }
 
-  // Nombre (patrón simple: "Mi nombre es X" o "Soy X")
   const nameMatch = text.match(/(?:mi nombre es|me llamo|soy)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]+(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+)*)/i);
   if (nameMatch && !capturedData.name) {
     capturedData.name = nameMatch[1];
     console.log(`👤 Nombre capturado: ${capturedData.name}`);
   }
 
-  // Empresa
   const companyMatch = text.match(/(?:trabajo en|empresa|compañía)\s+([A-Z][a-zA-Z\s]+)/i);
   if (companyMatch && !capturedData.company) {
     capturedData.company = companyMatch[1].trim();
