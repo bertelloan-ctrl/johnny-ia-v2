@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import WebSocket from 'ws';
+import { WebSocketServer } from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
 // ════════════════════════════════════════════════════════════
