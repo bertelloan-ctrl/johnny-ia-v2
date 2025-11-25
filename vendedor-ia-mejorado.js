@@ -27,7 +27,7 @@ const server = app.listen(PORT, () => {
   console.log('📞 Endpoint Twilio: /incoming-call');
 });
 
-const wss = new WebSocketServer({ server });
+const wss = new WebSocket.Server({ server });
 
 // ════════════════════════════════════════════════════════════
 // ESTADO DE LLAMADAS
