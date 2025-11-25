@@ -334,6 +334,18 @@ wss.on('connection', async (twilioWs, req) => {
             content: transcript,
             timestamp: new Date().toISOString()
           });
+// Detectar despedida del cliente
+const despedidasCliente = ['hasta luego', 'adiós', 'adios', 'nos hablamos', 'te marco después', 'hablamos luego', 'bye', 'chao'];
+const clientText = transcript.toLowerCase();
+const clienteDespidio = despedidasCliente.some(d => clientText.includes(d));
+
+if (clienteDespidio && !conversationEnded) {
+  console.log('👋 Cliente se despidió - Colgando en 2 segundos');
+  conversationEnded = true;
+  setTimeout(() => {
+    hangupCall();
+  }, 2000);
+}
 
           // Detección de IVR
           if (!callState.humanDetected && detectIVR(transcript)) {
