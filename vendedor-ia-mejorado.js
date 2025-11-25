@@ -373,6 +373,33 @@ wss.on('connection', async (twilioWs, req) => {
                 if (content.type === 'text') {
                   const agentText = content.text;
                   console.log(`🤖 Agente: ${agentText}`);
+// Detectar buzón de voz
+if (agentText.includes('[VOICEMAIL_DETECTED]')) {
+  console.log('📭 Buzón detectado - Colgando');
+  conversationEnded = true;
+  hangupCall();
+}
+        // Detectar despedidas del agente
+const despedidas = [
+  'gracias por tu tiempo',
+  'que tengas buen día',
+  'hasta luego',
+  'nos vemos',
+  'adiós',
+  'fue un placer',
+  'estaremos en contacto',
+  'te mando la información'
+];
+
+const isDespedida = despedidas.some(d => agentText.toLowerCase().includes(d));
+
+if (isDespedida && !conversationEnded) {
+  console.log('👋 Despedida detectada - Colgando en 3 segundos');
+  conversationEnded = true;
+  setTimeout(() => {
+    hangupCall();
+  }, 3000);
+}
                   
                   callState.transcript.push({
                     role: 'assistant',
