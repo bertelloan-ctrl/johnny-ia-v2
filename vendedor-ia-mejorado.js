@@ -698,11 +698,27 @@ if (event.type === 'response.audio.delta' && event.delta) {
       // ENVIAR AUDIO A OPENAI
       // ══════════════════════════════════════
       if (data.type === 'send-audio' && openaiWs && openaiWs.readyState === 1) {
-        openaiWs.send(JSON.stringify({
-          type: 'input_audio_buffer.append',
-          audio: data.audioBase64
-        }));
+  // Enviar audio
+  openaiWs.send(JSON.stringify({
+    type: 'input_audio_buffer.append',
+    audio: data.audioBase64
+  }));
+  
+  // Forzar que OpenAI procese y responda
+  setTimeout(() => {
+    openaiWs.send(JSON.stringify({
+      type: 'input_audio_buffer.commit'
+    }));
+    
+    openaiWs.send(JSON.stringify({
+      type: 'response.create',
+      response: {
+        modalities: ['text', 'audio'],
+        instructions: 'Responde de forma natural y conversacional a lo que el usuario acaba de decir.'
       }
+    }));
+  }, 500);
+}
 
     } catch (err) {
       console.error('[ERROR] Mensaje de cliente:', err);
