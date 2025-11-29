@@ -504,7 +504,32 @@ function extractCapturedData(text, capturedData) {
     console.log(`🏢 Empresa capturada: ${capturedData.company}`);
   }
 }
-
+// Función para convertir PCM16 a WAV
+function pcm16ToWav(pcm16Base64, sampleRate = 24000, channels = 1) {
+  const pcm16Buffer = Buffer.from(pcm16Base64, 'base64');
+  const wavHeader = Buffer.alloc(44);
+  
+  // RIFF header
+  wavHeader.write('RIFF', 0);
+  wavHeader.writeUInt32LE(36 + pcm16Buffer.length, 4);
+  wavHeader.write('WAVE', 8);
+  
+  // fmt chunk
+  wavHeader.write('fmt ', 12);
+  wavHeader.writeUInt32LE(16, 16); // chunk size
+  wavHeader.writeUInt16LE(1, 20); // audio format (PCM)
+  wavHeader.writeUInt16LE(channels, 22);
+  wavHeader.writeUInt32LE(sampleRate, 24);
+  wavHeader.writeUInt32LE(sampleRate * channels * 2, 28); // byte rate
+  wavHeader.writeUInt16LE(channels * 2, 32); // block align
+  wavHeader.writeUInt16LE(16, 34); // bits per sample
+  
+  // data chunk
+  wavHeader.write('data', 36);
+  wavHeader.writeUInt32LE(pcm16Buffer.length, 40);
+  
+  return Buffer.concat([wavHeader, pcm16Buffer]).toString('base64');
+}
 // ════════════════════════════════════════════════════════════
 // HEALTH CHECK
 // ════════════════════════════════════════════════════════════
@@ -641,14 +666,15 @@ wss.on('connection', (clientWs, req) => {
               }
             }
 
-            // Audio del agente
-            if (event.type === 'response.audio.delta' && event.delta) {
-              clientWs.send(JSON.stringify({
-                type: 'agent-audio',
-                audioBase64: event.delta,
-                timestamp: new Date().toISOString()
-              }));
-            }
+          // Audio del agente - Convertir PCM16 a WAV
+if (event.type === 'response.audio.delta' && event.delta) {
+  const wavAudio = pcm16ToWav(event.delta, 24000, 1);
+  clientWs.send(JSON.stringify({
+    type: 'agent-audio',
+    audioBase64: wavAudio,
+    timestamp: new Date().toISOString()
+  }));
+}
 
           } catch (err) {
             console.error('[ERROR] Procesando evento OpenAI:', err);
