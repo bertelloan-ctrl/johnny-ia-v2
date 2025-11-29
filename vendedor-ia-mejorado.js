@@ -516,5 +516,176 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+// ════════════════════════════════════════════════════════════
+// WEBSOCKET PARA PRUEBAS DIRECTAS DESDE APP (SIN TWILIO)
+// ════════════════════════════════════════════════════════════
 
+wss.on('connection', (clientWs, req) => {
+  // Detectar si NO es de Twilio (es conexión de prueba desde app)
+  const isTestConnection = req.url && req.url.includes('test-session');
+  
+  if (!isTestConnection) return; // Si es Twilio, usar el flujo normal
+  
+  console.log('🧪 Conexion de prueba desde app');
+
+  let openaiWs = null;
+  let sessionId = null;
+  let clientId = null;
+  let clientConfig = null;
+
+  clientWs.on('message', async (message) => {
+    try {
+      const data = JSON.parse(message);
+
+      // ══════════════════════════════════════
+      // INICIAR SESION DE PRUEBA
+      // ══════════════════════════════════════
+      if (data.type === 'start-test-session') {
+        clientId = data.clientId;
+        sessionId = 'test_' + Date.now();
+        
+        console.log('[TEST] Sesion iniciada:', sessionId, 'Cliente:', clientId);
+
+        // Cargar configuración del cliente
+        clientConfig = await loadClientConfig(clientId);
+        
+        if (!clientConfig) {
+          clientWs.send(JSON.stringify({
+            type: 'error',
+            message: 'No se pudo cargar la configuracion del cliente'
+          }));
+          return;
+        }
+
+        // Conectar con OpenAI Realtime
+        const openaiUrl = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-10-01';
+        
+        openaiWs = new WebSocket(openaiUrl, {
+          headers: {
+            'Authorization': 'Bearer ' + OPENAI_API_KEY,
+            'OpenAI-Beta': 'realtime=v1'
+          }
+        });
+
+        openaiWs.on('open', () => {
+          console.log('[TEST] Conectado a OpenAI');
+
+          // Configurar sesión con el prompt del cliente
+          const sessionUpdate = {
+            type: 'session.update',
+            session: {
+              modalities: ['text', 'audio'],
+              instructions: buildSystemPrompt(clientConfig),
+              voice: 'alloy',
+              input_audio_format: 'pcm16',
+              output_audio_format: 'pcm16',
+              input_audio_transcription: { model: 'whisper-1' },
+              turn_detection: {
+                type: 'server_vad',
+                threshold: 0.5,
+                prefix_padding_ms: 300,
+                silence_duration_ms: 500
+              },
+              temperature: 0.7
+            }
+          };
+
+          openaiWs.send(JSON.stringify(sessionUpdate));
+
+          // Confirmar al cliente
+          clientWs.send(JSON.stringify({
+            type: 'session-started',
+            sessionId,
+            config: clientConfig
+          }));
+
+          // Mensaje de bienvenida
+          const welcomeMsg = 'Hola! Soy ' + (clientConfig.agent_name || 'tu vendedor') + ' de ' + clientConfig.company_name + '. En que puedo ayudarte?';
+          
+          clientWs.send(JSON.stringify({
+            type: 'agent-message',
+            text: welcomeMsg,
+            timestamp: new Date().toISOString()
+          }));
+        });
+
+        openaiWs.on('message', (openaiMessage) => {
+          try {
+            const event = JSON.parse(openaiMessage);
+
+            // Transcripción del usuario
+            if (event.type === 'conversation.item.input_audio_transcription.completed') {
+              console.log('[USER]:', event.transcript);
+              clientWs.send(JSON.stringify({
+                type: 'user-message',
+                text: event.transcript,
+                timestamp: new Date().toISOString()
+              }));
+            }
+
+            // Transcripción del agente
+            if (event.type === 'response.done' && event.response.output) {
+              for (const output of event.response.output) {
+                if (output.type === 'message' && output.content) {
+                  for (const content of output.content) {
+                    if (content.type === 'text') {
+                      console.log('[AGENT]:', content.text);
+                      clientWs.send(JSON.stringify({
+                        type: 'agent-message',
+                        text: content.text,
+                        timestamp: new Date().toISOString()
+                      }));
+                    }
+                  }
+                }
+              }
+            }
+
+            // Audio del agente
+            if (event.type === 'response.audio.delta' && event.delta) {
+              clientWs.send(JSON.stringify({
+                type: 'agent-audio',
+                audioBase64: event.delta,
+                timestamp: new Date().toISOString()
+              }));
+            }
+
+          } catch (err) {
+            console.error('[ERROR] Procesando evento OpenAI:', err);
+          }
+        });
+
+        openaiWs.on('error', (error) => {
+          console.error('[ERROR] OpenAI:', error);
+          clientWs.send(JSON.stringify({
+            type: 'error',
+            message: 'Error de conexion con OpenAI'
+          }));
+        });
+
+        openaiWs.on('close', () => {
+          console.log('[TEST] OpenAI desconectado');
+        });
+      }
+
+      // ══════════════════════════════════════
+      // ENVIAR AUDIO A OPENAI
+      // ══════════════════════════════════════
+      if (data.type === 'send-audio' && openaiWs && openaiWs.readyState === 1) {
+        openaiWs.send(JSON.stringify({
+          type: 'input_audio_buffer.append',
+          audio: data.audioBase64
+        }));
+      }
+
+    } catch (err) {
+      console.error('[ERROR] Mensaje de cliente:', err);
+    }
+  });
+
+  clientWs.on('close', () => {
+    console.log('[TEST] Cliente desconectado');
+    if (openaiWs) openaiWs.close();
+  });
+});
 console.log('✅ Servidor iniciado correctamente');
