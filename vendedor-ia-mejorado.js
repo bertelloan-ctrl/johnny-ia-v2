@@ -4,6 +4,7 @@ import WebSocket from 'ws';
 import { WebSocketServer } from 'ws';
 import { createClient } from '@supabase/supabase-js';
 import Twilio from 'twilio';
+import { Server } from 'socket.io';
 
 // ════════════════════════════════════════════════════════════
 // CONFIGURACIÓN
@@ -34,6 +35,13 @@ const server = app.listen(PORT, () => {
 });
 
 const wss = new WebSocketServer({ server });
+
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST']
+  }
+});
 
 // ════════════════════════════════════════════════════════════
 // ESTADO DE LLAMADAS
@@ -730,4 +738,124 @@ if (event.type === 'response.audio.delta' && event.delta) {
     if (openaiWs) openaiWs.close();
   });
 });
+
+// Socket.IO para pruebas desde app
+io.on('connection', (socket) => {
+  console.log('[SOCKET.IO] Cliente conectado:', socket.id);
+
+  let openaiWs = null;
+  let sessionId = null;
+  let clientConfig = null;
+
+  socket.on('start-test-session', async (data) => {
+    const { clientId } = data;
+    sessionId = 'test_' + Date.now();
+    
+    console.log('[TEST] Sesion iniciada:', sessionId, 'Cliente:', clientId);
+
+    try {
+      clientConfig = await loadClientConfig(clientId);
+      
+      if (!clientConfig) {
+        socket.emit('error', { message: 'No se pudo cargar la configuracion del cliente' });
+        return;
+      }
+
+      const openaiUrl = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17';
+      
+      openaiWs = new WebSocket(openaiUrl, {
+        headers: {
+          'Authorization': 'Bearer ' + OPENAI_API_KEY,
+          'OpenAI-Beta': 'realtime=v1'
+        }
+      });
+
+      openaiWs.on('open', () => {
+        console.log('[TEST] Conectado a OpenAI');
+
+        const sessionUpdate = {
+          type: 'session.update',
+          session: {
+            modalities: ['text', 'audio'],
+            instructions: buildSystemPrompt(clientConfig),
+            voice: 'alloy',
+            input_audio_format: 'pcm16',
+            output_audio_format: 'pcm16',
+            input_audio_transcription: { model: 'whisper-1' },
+            turn_detection: { type: 'server_vad', threshold: 0.5, prefix_padding_ms: 300, silence_duration_ms: 500 },
+            temperature: 0.7
+          }
+        };
+
+        openaiWs.send(JSON.stringify(sessionUpdate));
+
+        socket.emit('session-started', { sessionId, config: clientConfig });
+
+        const welcomeMsg = 'Hola! Soy ' + (clientConfig.agent_name || 'tu vendedor') + ' de ' + clientConfig.company_name + '. En que puedo ayudarte?';
+        socket.emit('agent-message', { text: welcomeMsg, timestamp: new Date().toISOString() });
+      });
+
+      openaiWs.on('message', (openaiMessage) => {
+        try {
+          const event = JSON.parse(openaiMessage);
+
+          if (event.type === 'conversation.item.input_audio_transcription.completed') {
+            console.log('[USER]:', event.transcript);
+            socket.emit('user-message', { text: event.transcript, timestamp: new Date().toISOString() });
+          }
+
+          if (event.type === 'response.done' && event.response.output) {
+            for (const output of event.response.output) {
+              if (output.type === 'message' && output.content) {
+                for (const content of output.content) {
+                  if (content.type === 'text') {
+                    console.log('[AGENT]:', content.text);
+                    socket.emit('agent-message', { text: content.text, timestamp: new Date().toISOString() });
+                  }
+                }
+              }
+            }
+          }
+
+          if (event.type === 'response.audio.delta' && event.delta) {
+            const wavAudio = pcm16ToWav(event.delta, 24000, 1);
+            socket.emit('agent-audio', { audioBase64: wavAudio, timestamp: new Date().toISOString() });
+          }
+
+        } catch (err) {
+          console.error('[ERROR] Procesando evento OpenAI:', err);
+        }
+      });
+
+      openaiWs.on('error', (error) => {
+        console.error('[ERROR] OpenAI:', error);
+      });
+
+      openaiWs.on('close', () => {
+        console.log('[TEST] OpenAI desconectado');
+      });
+
+    } catch (error) {
+      console.error('[ERROR] Iniciando sesion:', error);
+      socket.emit('error', { message: error.message });
+    }
+  });
+
+  socket.on('send-audio', (data) => {
+    if (!openaiWs || openaiWs.readyState !== 1) return;
+
+    openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: data.audioBase64 }));
+
+    setTimeout(() => {
+      openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+      openaiWs.send(JSON.stringify({ type: 'response.create', response: { modalities: ['text', 'audio'] } }));
+    }, 500);
+  });
+
+  socket.on('disconnect', () => {
+    console.log('[SOCKET.IO] Cliente desconectado');
+    if (openaiWs) openaiWs.close();
+  });
+});
+
 console.log('✅ Servidor iniciado correctamente');
