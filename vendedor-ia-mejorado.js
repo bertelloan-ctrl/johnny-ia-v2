@@ -550,14 +550,6 @@ wss.on('connection', (clientWs, req) => {
   const isTestConnection = req.url && req.url.includes('test-session');
   
   if (!isTestConnection) return; // Si es Twilio, usar el flujo normal
-
-wss.on('connection', (clientWs, req) => {
-  console.log('[WS] Nueva conexion - URL:', req.url);
-  const isTestConnection = req.url && req.url.includes('test-session');
-  
-  console.log('[WS] Es conexion de prueba?', isTestConnection);
-  
-  if (!isTestConnection) return;
   
   console.log('🧪 Conexion de prueba desde app');
 
@@ -617,7 +609,7 @@ wss.on('connection', (clientWs, req) => {
                 type: 'server_vad',
                 threshold: 0.5,
                 prefix_padding_ms: 300,
-                silence_duration_ms: 500
+                silence_duratio n_ms: 500
               },
               temperature: 0.7
             }
