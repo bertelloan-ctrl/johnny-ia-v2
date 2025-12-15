@@ -609,7 +609,7 @@ wss.on('connection', (clientWs, req) => {
                 type: 'server_vad',
                 threshold: 0.5,
                 prefix_padding_ms: 300,
-                silence_duratio n_ms: 500
+                silence_duration_ms: 500
               },
               temperature: 0.7
             }
