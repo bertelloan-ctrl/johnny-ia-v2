@@ -549,6 +549,48 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString()
   });
 });
+
+// ════════════════════════════════════════════════════════════
+// API ENDPOINTS
+// ════════════════════════════════════════════════════════════
+
+app.get('/api/get-clients', async (req, res) => {
+  try {
+    console.log('[API] Obteniendo todos los clientes');
+
+    const { data: clients, error } = await supabase
+      .from('johnny_clients')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    res.json({ success: true, clients: clients || [] });
+  } catch (error) {
+    console.error('[ERROR] Obteniendo clientes:', error.message);
+    res.status(500).json({ success: false, error: error.message, clients: [] });
+  }
+});
+
+app.post('/api/save-client', async (req, res) => {
+  try {
+    const clientData = req.body;
+
+    console.log('[API] Guardando cliente:', clientData.client_id);
+
+    const { data, error } = await supabase
+      .from('johnny_clients')
+      .upsert(clientData, { onConflict: 'client_id' });
+
+    if (error) throw error;
+
+    res.json({ success: true, message: 'Cliente guardado correctamente' });
+  } catch (error) {
+    console.error('[ERROR] Guardando cliente:', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // ════════════════════════════════════════════════════════════
 // WEBSOCKET PARA PRUEBAS DIRECTAS DESDE APP (SIN TWILIO)
 // ════════════════════════════════════════════════════════════
