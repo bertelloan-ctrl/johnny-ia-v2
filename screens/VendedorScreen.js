@@ -19,7 +19,7 @@ export default function VendedorScreen({ navigation }) {
 
   const fetchClients = async () => {
     try {
-      const response = await fetch('http://192.168.3.27:3000/api/get-clients');
+      const response = await fetch('https://johnny-ia-v2.onrender.com/api/get-clients');
       const data = await response.json();
 
       if (data.success) {

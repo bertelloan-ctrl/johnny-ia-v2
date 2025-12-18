@@ -13,7 +13,7 @@ export default function DashboardScreen({ route }) {
 
   const fetchStats = async () => {
     try {
-      const response = await fetch(`http://192.168.3.27:3000/api/stats?client_id=${clientId}`);
+      const response = await fetch(`https://johnny-ia-v2.onrender.com/api/stats?client_id=${clientId}`);
       const data = await response.json();
 
       if (data.success) {

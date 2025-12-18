@@ -13,7 +13,7 @@ export default function LeadsScreen({ route }) {
 
   const fetchLeads = async () => {
     try {
-      const response = await fetch(`http://192.168.3.27:3000/api/leads?client_id=${clientId}`);
+      const response = await fetch(`https://johnny-ia-v2.onrender.com/api/leads?client_id=${clientId}`);
       const data = await response.json();
 
       if (data.success) {

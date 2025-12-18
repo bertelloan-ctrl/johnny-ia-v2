@@ -26,7 +26,7 @@ export default function ClientConfigScreen({ navigation }) {
     };
 
     try {
-      const response = await fetch('http://192.168.3.27:3000/api/save-client', {
+      const response = await fetch('https://johnny-ia-v2.onrender.com/api/save-client', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
