@@ -674,39 +674,15 @@ wss.on('connection', (clientWs, req) => {
             config: clientConfig
           }));
 
-          // Generar mensaje de bienvenida
-          const welcomeMsg = 'Hola! Soy ' + (clientConfig.agent_name || 'tu vendedor') + ' de ' + clientConfig.company_name + '. En que puedo ayudarte?';
-
-          // Enviar como texto primero
+          // Mensaje de bienvenida (solo texto, el audio vendrá cuando el usuario hable)
+          const welcomeMsg = '🎤 Micrófono listo. Empieza a hablar con tu vendedor IA de ' + clientConfig.company_name;
           clientWs.send(JSON.stringify({
             type: 'agent-message',
             text: welcomeMsg,
             timestamp: new Date().toISOString()
           }));
 
-          // Crear mensaje del asistente en la conversación
-          openaiWs.send(JSON.stringify({
-            type: 'conversation.item.create',
-            item: {
-              type: 'message',
-              role: 'assistant',
-              content: [
-                {
-                  type: 'text',
-                  text: welcomeMsg
-                }
-              ]
-            }
-          }));
-
-          // Generar audio del mensaje
-          openaiWs.send(JSON.stringify({
-            type: 'response.create',
-            response: {
-              modalities: ['text', 'audio'],
-              instructions: 'Repite exactamente el último mensaje sin agregar nada más.'
-            }
-          }));
+          console.log('[TEST] ✅ Sesión lista, esperando audio del usuario...');
         });
 
         openaiWs.on('message', (openaiMessage) => {
@@ -858,35 +834,11 @@ io.on('connection', (socket) => {
 
         socket.emit('session-started', { sessionId, config: clientConfig });
 
-        // Generar mensaje de bienvenida
-        const welcomeMsg = 'Hola! Soy ' + (clientConfig.agent_name || 'tu vendedor') + ' de ' + clientConfig.company_name + '. En que puedo ayudarte?';
-
-        // Enviar como texto primero
+        // Mensaje de bienvenida (solo texto, el audio vendrá cuando el usuario hable)
+        const welcomeMsg = '🎤 Micrófono listo. Empieza a hablar con tu vendedor IA de ' + clientConfig.company_name;
         socket.emit('agent-message', { text: welcomeMsg, timestamp: new Date().toISOString() });
 
-        // Crear mensaje del asistente en la conversación
-        openaiWs.send(JSON.stringify({
-          type: 'conversation.item.create',
-          item: {
-            type: 'message',
-            role: 'assistant',
-            content: [
-              {
-                type: 'text',
-                text: welcomeMsg
-              }
-            ]
-          }
-        }));
-
-        // Generar audio del mensaje
-        openaiWs.send(JSON.stringify({
-          type: 'response.create',
-          response: {
-            modalities: ['text', 'audio'],
-            instructions: 'Repite exactamente el último mensaje sin agregar nada más.'
-          }
-        }));
+        console.log('[TEST] ✅ Sesión lista, esperando audio del usuario...');
       });
 
       openaiWs.on('message', (openaiMessage) => {
@@ -936,14 +888,25 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send-audio', (data) => {
-    if (!openaiWs || openaiWs.readyState !== 1) return;
+    if (!openaiWs || openaiWs.readyState !== 1) {
+      console.log('[WARN] No se puede enviar audio: OpenAI no conectado');
+      return;
+    }
 
-    openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: data.audioBase64 }));
+    const audioLength = data.audioBase64 ? data.audioBase64.length : 0;
+    console.log('[AUDIO] Recibiendo chunk de audio, tamaño:', audioLength);
 
-    setTimeout(() => {
-      openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
-      openaiWs.send(JSON.stringify({ type: 'response.create', response: { modalities: ['text', 'audio'] } }));
-    }, 500);
+    if (audioLength > 0) {
+      openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.append', audio: data.audioBase64 }));
+
+      setTimeout(() => {
+        openaiWs.send(JSON.stringify({ type: 'input_audio_buffer.commit' }));
+        openaiWs.send(JSON.stringify({ type: 'response.create', response: { modalities: ['text', 'audio'] } }));
+        console.log('[AUDIO] Audio enviado a OpenAI, esperando respuesta...');
+      }, 500);
+    } else {
+      console.log('[WARN] Chunk de audio vacío, ignorando');
+    }
   });
 
   socket.on('disconnect', () => {
