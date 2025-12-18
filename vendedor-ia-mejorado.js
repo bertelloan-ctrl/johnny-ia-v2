@@ -674,27 +674,38 @@ wss.on('connection', (clientWs, req) => {
             config: clientConfig
           }));
 
-          // Generar mensaje de bienvenida con audio usando OpenAI
+          // Generar mensaje de bienvenida
           const welcomeMsg = 'Hola! Soy ' + (clientConfig.agent_name || 'tu vendedor') + ' de ' + clientConfig.company_name + '. En que puedo ayudarte?';
 
-          // Crear item de conversación con el mensaje de bienvenida
+          // Enviar como texto primero
+          clientWs.send(JSON.stringify({
+            type: 'agent-message',
+            text: welcomeMsg,
+            timestamp: new Date().toISOString()
+          }));
+
+          // Crear mensaje del asistente en la conversación
           openaiWs.send(JSON.stringify({
             type: 'conversation.item.create',
             item: {
               type: 'message',
-              role: 'user',
+              role: 'assistant',
               content: [
                 {
-                  type: 'input_text',
-                  text: 'Di esto: ' + welcomeMsg
+                  type: 'text',
+                  text: welcomeMsg
                 }
               ]
             }
           }));
 
-          // Solicitar respuesta de OpenAI (esto generará el audio)
+          // Generar audio del mensaje
           openaiWs.send(JSON.stringify({
-            type: 'response.create'
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+              instructions: 'Repite exactamente el último mensaje sin agregar nada más.'
+            }
           }));
         });
 
@@ -847,27 +858,34 @@ io.on('connection', (socket) => {
 
         socket.emit('session-started', { sessionId, config: clientConfig });
 
-        // Generar mensaje de bienvenida con audio usando OpenAI
+        // Generar mensaje de bienvenida
         const welcomeMsg = 'Hola! Soy ' + (clientConfig.agent_name || 'tu vendedor') + ' de ' + clientConfig.company_name + '. En que puedo ayudarte?';
 
-        // Crear item de conversación con el mensaje de bienvenida
+        // Enviar como texto primero
+        socket.emit('agent-message', { text: welcomeMsg, timestamp: new Date().toISOString() });
+
+        // Crear mensaje del asistente en la conversación
         openaiWs.send(JSON.stringify({
           type: 'conversation.item.create',
           item: {
             type: 'message',
-            role: 'user',
+            role: 'assistant',
             content: [
               {
-                type: 'input_text',
-                text: 'Di esto: ' + welcomeMsg
+                type: 'text',
+                text: welcomeMsg
               }
             ]
           }
         }));
 
-        // Solicitar respuesta de OpenAI (esto generará el audio)
+        // Generar audio del mensaje
         openaiWs.send(JSON.stringify({
-          type: 'response.create'
+          type: 'response.create',
+          response: {
+            modalities: ['text', 'audio'],
+            instructions: 'Repite exactamente el último mensaje sin agregar nada más.'
+          }
         }));
       });
 
