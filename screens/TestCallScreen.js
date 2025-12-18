@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { Audio } from 'expo-av';
+import * as FileSystem from 'expo-file-system';
 import io from 'socket.io-client';
 
 export default function TestCallScreen({ route, navigation }) {
@@ -87,6 +88,18 @@ export default function TestCallScreen({ route, navigation }) {
         addMessage('user', data.text);
       });
 
+      newSocket.on('agent-audio', async (data) => {
+        try {
+          const { sound } = await Audio.Sound.createAsync(
+            { uri: `data:audio/wav;base64,${data.audioBase64}` },
+            { shouldPlay: true }
+          );
+          await sound.playAsync();
+        } catch (error) {
+          console.error('Error reproduciendo audio:', error);
+        }
+      });
+
       newSocket.on('error', (data) => {
         console.error('Error:', data.message);
         addMessage('system', 'Error: ' + data.message);
@@ -150,10 +163,16 @@ export default function TestCallScreen({ route, navigation }) {
         await recordingRef.current.stopAndUnloadAsync();
         const uri = recordingRef.current.getURI();
 
-        sock.emit('send-audio', {
-          sessionId: sessId,
-          audioData: 'audio_placeholder'
-        });
+        if (uri) {
+          const audioBase64 = await FileSystem.readAsStringAsync(uri, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+
+          sock.emit('send-audio', {
+            sessionId: sessId,
+            audioBase64: audioBase64
+          });
+        }
 
         if (callActive && !isMuted) {
           const { recording: newRecording } = await Audio.Recording.createAsync({
@@ -265,7 +284,7 @@ export default function TestCallScreen({ route, navigation }) {
 
   const saveAndExit = async () => {
     try {
-      const response = await fetch('http://192.168.3.27:3000/api/save-test-conversation', {
+      const response = await fetch('https://johnny-ia-v2.onrender.com/api/save-test-conversation', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
