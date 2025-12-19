@@ -245,16 +245,11 @@ io.on('connection', (socket) => {
 
       clientConfig = config;
 
+      console.log('✅ Configuración cargada para', clientId + ':', clientConfig.company_name);
+
       socket.emit('session-started', {
         sessionId,
         config: clientConfig
-      });
-
-      const welcomeMessage = 'Hola! Soy ' + (clientConfig.agent_name || 'tu vendedor') + ' de ' + clientConfig.company_name + '. En que puedo ayudarte?';
-
-      socket.emit('agent-message', {
-        text: welcomeMessage,
-        timestamp: new Date().toISOString()
       });
 
       // Conectar con OpenAI Realtime
@@ -267,15 +262,10 @@ io.on('connection', (socket) => {
         }
       });
 
-      console.log('[DEBUG] Intentando conectar a OpenAI...');
-      console.log('[DEBUG] API Key presente:', process.env.OPENAI_API_KEY ? 'SI' : 'NO');
-      console.log('[DEBUG] API Key primeros caracteres:', process.env.OPENAI_API_KEY?.substring(0, 10));
-      console.log('[DEBUG] Intentando conectar a OpenAI...');
-      console.log('[DEBUG] API Key presente:', process.env.OPENAI_API_KEY ? 'SI' : 'NO');
-      console.log('[DEBUG] API Key primeros caracteres:', process.env.OPENAI_API_KEY?.substring(0, 10));
+      console.log('[TEST] Conectando a OpenAI...');
 
       openaiWs.on('open', () => {
-        console.log('[OPENAI] Conectado');
+        console.log('[TEST] ✅ Conectado a OpenAI');
 
         const systemPrompt = buildSystemPrompt(clientConfig);
 
@@ -299,6 +289,20 @@ io.on('connection', (socket) => {
         };
 
         openaiWs.send(JSON.stringify(sessionUpdate));
+
+        // Esperar un momento para que la sesión se configure
+        setTimeout(() => {
+          // Solicitar que OpenAI genere un saludo de bienvenida
+          openaiWs.send(JSON.stringify({
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio'],
+              instructions: 'Saluda al cliente y preséntate brevemente'
+            }
+          }));
+
+          console.log('[TEST] ✅ Sesión lista, esperando audio del usuario...');
+        }, 500);
       });
 
       openaiWs.on('message', (message) => {
@@ -358,31 +362,49 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send-audio', async (data) => {
-    if (!openaiWs || openaiWs.readyState !== 1) return;
-
-    console.log('[AUDIO] Recibido, enviando a OpenAI...');
+    if (!openaiWs || openaiWs.readyState !== 1) {
+      console.log('[AUDIO] No se puede enviar, OpenAI no conectado');
+      return;
+    }
 
     try {
+      // El cliente envía audioBase64 que es un WAV completo
+      // Necesitamos extraer solo el PCM16 (sin header WAV)
+      const wavBuffer = Buffer.from(data.audioBase64, 'base64');
+
+      // Un header WAV típico tiene 44 bytes, el resto es PCM16
+      const pcm16Data = wavBuffer.slice(44);
+      const pcm16Base64 = pcm16Data.toString('base64');
+
+      console.log('[AUDIO] Recibido WAV:', wavBuffer.length, 'bytes, PCM16:', pcm16Data.length, 'bytes');
+
       openaiWs.send(JSON.stringify({
         type: 'input_audio_buffer.append',
-        audio: data.audioData
+        audio: pcm16Base64
       }));
 
-      setTimeout(() => {
-        openaiWs.send(JSON.stringify({
-          type: 'input_audio_buffer.commit'
-        }));
+      console.log('[AUDIO] Audio PCM16 enviado a OpenAI');
 
-        openaiWs.send(JSON.stringify({
-          type: 'response.create',
-          response: {
-            modalities: ['text', 'audio']
-          }
-        }));
+      // Hacer commit y solicitar respuesta después de un breve delay
+      setTimeout(() => {
+        if (openaiWs && openaiWs.readyState === 1) {
+          openaiWs.send(JSON.stringify({
+            type: 'input_audio_buffer.commit'
+          }));
+
+          openaiWs.send(JSON.stringify({
+            type: 'response.create',
+            response: {
+              modalities: ['text', 'audio']
+            }
+          }));
+
+          console.log('[AUDIO] Commit y respuesta solicitada');
+        }
       }, 500);
 
     } catch (error) {
-      console.error('[ERROR] Enviando audio:', error);
+      console.error('[ERROR] Procesando audio:', error);
     }
   });
 
