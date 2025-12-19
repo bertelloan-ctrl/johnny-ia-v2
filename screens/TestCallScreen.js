@@ -90,13 +90,36 @@ export default function TestCallScreen({ route, navigation }) {
 
       newSocket.on('agent-audio', async (data) => {
         try {
+          console.log('[APP] Audio recibido del servidor, tamaño:', data.audioBase64.length);
+
+          // Pausar grabación mientras se reproduce el audio del agente
+          const wasRecording = !!recordingRef.current;
+          if (wasRecording) {
+            await recordingRef.current.pauseAsync();
+            console.log('[APP] Grabación pausada para reproducir audio');
+          }
+
           const { sound } = await Audio.Sound.createAsync(
             { uri: `data:audio/wav;base64,${data.audioBase64}` },
-            { shouldPlay: true }
+            { shouldPlay: true, volume: 1.0 }
           );
+
+          console.log('[APP] Reproduciendo audio del agente...');
           await sound.playAsync();
+
+          // Esperar a que termine de reproducir
+          sound.setOnPlaybackStatusUpdate((status) => {
+            if (status.didJustFinish) {
+              console.log('[APP] Audio terminado, resumiendo grabación');
+              sound.unloadAsync();
+              if (wasRecording && recordingRef.current) {
+                recordingRef.current.startAsync();
+              }
+            }
+          });
         } catch (error) {
-          console.error('Error reproduciendo audio:', error);
+          console.error('[APP ERROR] Reproduciendo audio:', error);
+          console.error('[APP ERROR] Detalles:', JSON.stringify(error, null, 2));
         }
       });
 
