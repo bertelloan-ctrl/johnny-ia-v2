@@ -120,6 +120,7 @@ export default function TestCallScreen({ route, navigation }) {
 
   const startContinuousRecording = async (sock, sessId) => {
     try {
+      console.log('[DEBUG] 🎤 Iniciando grabación continua...');
       const { recording: newRecording } = await Audio.Recording.createAsync({
         android: {
           extension: '.wav',
@@ -144,10 +145,13 @@ export default function TestCallScreen({ route, navigation }) {
       recordingRef.current = newRecording;
       setRecording(newRecording);
 
+      console.log('[DEBUG] ✅ Grabación iniciada exitosamente');
+
       sendAudioChunks(sock, sessId);
 
     } catch (error) {
-      console.error('Error iniciando grabacion:', error);
+      console.error('[ERROR] Error iniciando grabacion:', error);
+      addMessage('system', 'Error al iniciar grabación: ' + error.message);
     }
   };
 
@@ -156,22 +160,40 @@ export default function TestCallScreen({ route, navigation }) {
       clearInterval(audioInterval.current);
     }
 
+    console.log('[DEBUG] Iniciando envío de audio cada 3 segundos...');
+
     audioInterval.current = setInterval(async () => {
-      if (!recordingRef.current || !sock || isMuted || !callActive) return;
+      if (!recordingRef.current || !sock || isMuted || !callActive) {
+        console.log('[DEBUG] No se puede enviar audio:', {
+          hasRecording: !!recordingRef.current,
+          hasSocket: !!sock,
+          isMuted,
+          callActive
+        });
+        return;
+      }
 
       try {
+        console.log('[DEBUG] Intentando enviar chunk de audio...');
         await recordingRef.current.stopAndUnloadAsync();
         const uri = recordingRef.current.getURI();
+        console.log('[DEBUG] URI del audio:', uri);
 
         if (uri) {
           const audioBase64 = await FileSystem.readAsStringAsync(uri, {
             encoding: FileSystem.EncodingType.Base64,
           });
 
+          console.log('[DEBUG] Audio convertido a base64, tamaño:', audioBase64.length);
+
           sock.emit('send-audio', {
             sessionId: sessId,
             audioBase64: audioBase64
           });
+
+          console.log('[DEBUG] ✅ Audio enviado al servidor');
+        } else {
+          console.log('[DEBUG] ⚠️ URI vacía, no se puede leer el audio');
         }
 
         if (callActive && !isMuted) {
