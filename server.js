@@ -309,6 +309,14 @@ io.on('connection', (socket) => {
         try {
           const event = JSON.parse(message);
 
+          // Log TODOS los eventos de OpenAI para debugging
+          console.log('[OPENAI EVENT]:', event.type);
+
+          if (event.type === 'error') {
+            console.error('[OPENAI ERROR EVENT]:', JSON.stringify(event, null, 2));
+            socket.emit('error', { message: 'Error de OpenAI: ' + (event.error?.message || 'Unknown') });
+          }
+
           if (event.type === 'conversation.item.input_audio_transcription.completed') {
             console.log('[USER]:', event.transcript);
             socket.emit('user-message', {
@@ -318,6 +326,7 @@ io.on('connection', (socket) => {
           }
 
           if (event.type === 'response.done' && event.response.output) {
+            console.log('[OPENAI] Respuesta completa recibida');
             for (const output of event.response.output) {
               if (output.type === 'message' && output.content) {
                 for (const content of output.content) {
@@ -334,11 +343,16 @@ io.on('connection', (socket) => {
           }
 
           if (event.type === 'response.audio.delta' && event.delta) {
+            console.log('[OPENAI] Audio delta recibido, tamaño:', event.delta.length);
             const wavAudio = pcm16ToWav(event.delta, 24000, 1);
             socket.emit('agent-audio', {
               audioBase64: wavAudio,
               timestamp: new Date().toISOString()
             });
+          }
+
+          if (event.type === 'response.audio_transcript.done') {
+            console.log('[AGENT TRANSCRIPT]:', event.transcript);
           }
 
         } catch (err) {
