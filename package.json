@@ -4,7 +4,7 @@
   "type": "module",
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
-    "start": "node vendedor-ia-mejorado.js",
+    "start": "node server.js",
     "dev": "expo start"
   },
   "dependencies": {
