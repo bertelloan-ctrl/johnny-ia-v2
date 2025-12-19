@@ -1,7 +1,6 @@
 ﻿{
   "name": "johnny-ia-v2",
   "version": "1.0.0",
-  "type": "module",
   "main": "node_modules/expo/AppEntry.js",
   "scripts": {
     "start": "node server.js",
