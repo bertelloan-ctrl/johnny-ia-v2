@@ -1,10 +1,14 @@
 const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 const { Server } = require('socket.io');
+const cors = require('cors');
 require('dotenv').config();
 const WebSocket = require('ws');
 const app = express();
 const PORT = process.env.PORT || 8080;
+
+// Habilitar CORS para todas las solicitudes
+app.use(cors());
 app.use(express.json());
 
 // Inicializar Supabase
