@@ -67,7 +67,9 @@ export default function TestCallScreen({ route, navigation }) {
       });
 
       newSocket.on('session-started', async (data) => {
-        console.log('Sesion iniciada:', data.sessionId);
+        console.log('[APP] ✅ Sesión iniciada:', data.sessionId);
+        console.log('[APP] 📋 Config recibida:', JSON.stringify(data.config, null, 2));
+
         setSessionId(data.sessionId);
         setCallActive(true);
 
@@ -75,16 +77,23 @@ export default function TestCallScreen({ route, navigation }) {
           setCallDuration(prev => prev + 1);
         }, 1000);
 
-        await startContinuousRecording(newSocket, data.sessionId);
+        console.log('[APP] 🎤 Iniciando grabación continua...');
+        try {
+          await startContinuousRecording(newSocket, data.sessionId);
+          console.log('[APP] ✅ Grabación iniciada exitosamente');
+        } catch (error) {
+          console.error('[APP ERROR] Error al iniciar grabación:', error);
+          addMessage('system', 'Error al iniciar grabación: ' + error.message);
+        }
       });
 
       newSocket.on('agent-message', (data) => {
-        console.log('Vendedor:', data.text);
+        console.log('[APP] 💬 Mensaje del vendedor:', data.text);
         addMessage('agent', data.text);
       });
 
       newSocket.on('user-message', (data) => {
-        console.log('Tu:', data.text);
+        console.log('[APP] 🗣️ Tu mensaje:', data.text);
         addMessage('user', data.text);
       });
 
