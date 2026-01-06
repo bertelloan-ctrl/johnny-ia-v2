@@ -2,27 +2,26 @@ const { getDefaultConfig } = require('expo/metro-config');
 
 const config = getDefaultConfig(__dirname);
 
-// Disable all caching to force fresh builds
+// FORCE COMPLETE CACHE RESET
 config.resetCache = true;
 config.cacheStores = [];
+config.cacheVersion = Date.now().toString();
 
-// Force transformer to reprocess all files
+// Disable all caching mechanisms
 config.transformer = {
   ...config.transformer,
-  minifierConfig: {
-    keep_classnames: true,
-    keep_fnames: true,
-    mangle: {
-      keep_classnames: true,
-      keep_fnames: true,
-    },
-  },
+  enableBabelRCLookup: false,
+  enableBabelRuntime: false,
+  babelTransformerPath: undefined,
 };
 
-// Clear resolver cache
+// Clear resolver cache completely
 config.resolver = {
   ...config.resolver,
-  disableHierarchicalLookup: false,
+  useWatchman: false,
 };
+
+// Force Metro to always recompile
+config.watchFolders = [__dirname];
 
 module.exports = config;
