@@ -97,8 +97,66 @@ Ver todos los commits en la rama `claude/debug-app-issues-Tu2Wr`:
 git log --oneline origin/master..HEAD
 ```
 
-## 🚀 SIGUIENTE PASO
+## 🚀 SOLUCIONES INTENTADAS
 
-**Resolver el problema de caché/bundling de Expo** para que TestCallScreen.js use el código actualizado con los logs `[APP]` y la lógica de audio corregida.
+### Nuevo: Metro Config Agregado
+- ✅ Creado `metro.config.js` con configuración para forzar rebuild sin caché
+- ✅ Configurado `resetCache: true` y `cacheStores: []`
+- 🔄 Necesita probarse con: `npx expo start --clear`
 
-Una vez resuelto esto, el audio bidireccional funcionará completamente ya que el servidor está 100% operacional.
+### Nuevo: EAS Build Configurado
+- ✅ `eas.json` actualizado con perfil `development`
+- ✅ Configurado para iOS simulator (no requiere cuenta de pago)
+- ✅ Package `expo-dev-client` instalado
+- ❌ **BLOQUEADO**: Requiere login a EAS CLI
+
+## 📋 OPCIONES PARA CONTINUAR
+
+### Opción 1: Probar Metro Config (MÁS RÁPIDO)
+```bash
+# Eliminar todo caché manualmente
+rm -rf .expo node_modules/.cache .metro
+# Iniciar con el nuevo metro.config.js
+npx expo start --clear --reset-cache
+```
+
+### Opción 2: EAS Development Build para iOS Simulator
+```bash
+# Requiere login primero
+eas login
+# Build para simulator (gratis, no requiere cuenta de Apple Developer pagada)
+eas build --profile development --platform ios
+```
+
+### Opción 3: EAS Development Build para Android
+```bash
+# Requiere login primero
+eas login
+# Build para Android (no requiere cuenta de pago)
+eas build --profile development --platform android
+```
+
+### Opción 4: Probar en Web
+El servidor funciona perfectamente. Podrías probar la funcionalidad en un navegador web:
+```bash
+npx expo start --web
+```
+
+## 🎯 ESTADO FINAL
+
+**SERVIDOR: ✅ 100% FUNCIONAL**
+- OpenAI Realtime API conectado y respondiendo
+- Audio bidireccional procesándose correctamente
+- Transcripciones funcionando
+- Logs confirman todo operativo
+
+**CÓDIGO MÓVIL: ✅ ACTUALIZADO**
+- Todos los archivos tienen el código correcto
+- Logs con `[APP]` están en TestCallScreen.js
+- Lógica de audio pausado durante reproducción implementada
+
+**PROBLEMA: Expo Go no carga código actualizado**
+
+**SOLUCIÓN RECOMENDADA**:
+1. Probar con nuevo `metro.config.js` (Opción 1)
+2. Si no funciona, hacer development build (Opción 2 o 3)
