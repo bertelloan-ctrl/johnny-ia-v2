@@ -60,13 +60,7 @@ export default function TestCallScreen({ route, navigation }) {
     try {
       const newSocket = io('https://johnny-ia-v2.onrender.com');
 
-      newSocket.on('connect', () => {
-        console.log('Conectado con Socket.IO');
-        addMessage('system', 'Llamada conectada');
-
-        newSocket.emit('start-test-session', { clientId });
-      });
-
+      // Register ALL listeners BEFORE emitting any events
       newSocket.on('session-started', async (data) => {
         console.log('[APP] ✅ Sesión iniciada:', data.sessionId);
         console.log('[APP] 📋 Config recibida:', JSON.stringify(data.config, null, 2));
@@ -141,6 +135,15 @@ export default function TestCallScreen({ route, navigation }) {
       newSocket.on('disconnect', () => {
         console.log('Desconectado');
         endCall();
+      });
+
+      // Register 'connect' listener LAST, after all other listeners are ready
+      newSocket.on('connect', () => {
+        console.log('Conectado con Socket.IO');
+        addMessage('system', 'Llamada conectada');
+
+        // Now that all listeners are registered, emit the event
+        newSocket.emit('start-test-session', { clientId });
       });
 
       setSocket(newSocket);
