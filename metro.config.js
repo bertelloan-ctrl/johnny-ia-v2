@@ -2,10 +2,10 @@ const { getDefaultConfig } = require('expo/metro-config');
 
 const config = getDefaultConfig(__dirname);
 
-// FORCE COMPLETE CACHE RESET
+// FORCE COMPLETE CACHE RESET - Use random value to bust cache every time
 config.resetCache = true;
 config.cacheStores = [];
-config.cacheVersion = Date.now().toString();
+config.cacheVersion = Math.random().toString();
 
 // Disable all caching mechanisms
 config.transformer = {
