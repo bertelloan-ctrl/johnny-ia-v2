@@ -3,7 +3,7 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import HomeScreen from './screens/HomeScreen';
 import VendedorScreen from './screens/VendedorScreen';
-import TestCallScreen from './screens/TestCallScreen';
+import TestCallScreen from './screens/TestCallScreenNew';
 import ClientConfigScreen from './screens/ClientConfigScreen';
 import DashboardScreen from './screens/DashboardScreen';
 import LeadsScreen from './screens/LeadsScreen';
