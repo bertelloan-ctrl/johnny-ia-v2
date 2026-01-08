@@ -103,8 +103,14 @@ export default function TestCallScreen({ route, navigation }) {
             console.log('[APP] Grabación pausada para reproducir audio');
           }
 
+          // Save audio to temporary file instead of using data URI
+          const fileUri = FileSystem.cacheDirectory + `agent_audio_${Date.now()}.wav`;
+          await FileSystem.writeAsStringAsync(fileUri, data.audioBase64, {
+            encoding: FileSystem.EncodingType.Base64,
+          });
+
           const { sound } = await Audio.Sound.createAsync(
-            { uri: `data:audio/wav;base64,${data.audioBase64}` },
+            { uri: fileUri },
             { shouldPlay: true, volume: 1.0 }
           );
 
@@ -112,10 +118,12 @@ export default function TestCallScreen({ route, navigation }) {
           await sound.playAsync();
 
           // Esperar a que termine de reproducir
-          sound.setOnPlaybackStatusUpdate((status) => {
+          sound.setOnPlaybackStatusUpdate(async (status) => {
             if (status.didJustFinish) {
               console.log('[APP] Audio terminado, resumiendo grabación');
-              sound.unloadAsync();
+              await sound.unloadAsync();
+              // Delete temporary file
+              await FileSystem.deleteAsync(fileUri, { idempotent: true });
               if (wasRecording && recordingRef.current) {
                 recordingRef.current.startAsync();
               }
