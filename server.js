@@ -348,12 +348,18 @@ io.on('connection', (socket) => {
 
           if (event.type === 'response.audio.delta' && event.delta) {
             console.log('[OPENAI] Audio delta recibido, tamaño:', event.delta.length);
-            const wavAudio = pcm16ToWav(event.delta, 24000, 1);
-            console.log('[SERVER] 📤 Enviando audio al cliente, tamaño WAV:', wavAudio.length);
-            socket.emit('agent-audio', {
-              audioBase64: wavAudio,
-              timestamp: new Date().toISOString()
-            });
+            try {
+              const wavAudio = pcm16ToWav(event.delta, 24000, 1);
+              console.log('[SERVER] 📤 Enviando audio al cliente, tamaño WAV:', wavAudio.length);
+              console.log('[SERVER] 🔊 Primeros 100 chars del WAV:', wavAudio.substring(0, 100));
+              socket.emit('agent-audio', {
+                audioBase64: wavAudio,
+                timestamp: new Date().toISOString()
+              });
+              console.log('[SERVER] ✅ Audio emitido exitosamente');
+            } catch (conversionError) {
+              console.error('[SERVER ERROR] Error convirtiendo audio:', conversionError);
+            }
           }
 
           if (event.type === 'response.audio_transcript.done') {
