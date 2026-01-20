@@ -1,9 +1,10 @@
-// UPDATED VERSION 3.0 - FINAL FIX
+// UPDATED VERSION 4.0 - WITH REMOTE LOGGING
 import React, { useState, useEffect, useRef } from 'react';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import io from 'socket.io-client';
+import remoteLogger from '../utils/RemoteLogger';
 
 export default function TestCallScreen({ route, navigation }) {
   const { clientId, clientName } = route.params;
@@ -23,15 +24,23 @@ export default function TestCallScreen({ route, navigation }) {
   const audioInterval = useRef(null);
 
   useEffect(() => {
-    console.log('[APP] 🚀 Componente TestCallScreen montado');
-    console.log('[APP] 📋 Parámetros recibidos:', { clientId, clientName });
-    console.log('[APP] 📋 FileSystem.cacheDirectory:', FileSystem.cacheDirectory);
+    console.log('═══════════════════════════════════════════════════════════');
+    console.log('[APP] 🚀 COMPONENTE TESTCALLSCREEN MONTADO');
+    console.log('[APP] 📡 REMOTE LOGGER ACTIVO - Los logs se enviarán al servidor');
+    console.log('[APP] 📋 Parámetros recibidos:', JSON.stringify({ clientId, clientName }));
+    console.log('[APP] 📁 FileSystem.cacheDirectory:', FileSystem.cacheDirectory);
+    console.log('═══════════════════════════════════════════════════════════');
 
     requestPermissions();
 
     return () => {
       console.log('[APP] 🔄 Componente desmontándose, limpiando recursos...');
       try {
+        // Enviar todos los logs pendientes antes de cerrar
+        remoteLogger.forceFlush().catch(err =>
+          console.error('[APP] Error enviando logs finales:', err)
+        );
+
         if (recordingRef.current) {
           recordingRef.current.stopAndUnloadAsync().catch(err =>
             console.error('[APP] Error deteniendo grabación en cleanup:', err)

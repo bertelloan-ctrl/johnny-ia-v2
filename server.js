@@ -197,6 +197,31 @@ app.post('/api/save-test-conversation', async (req, res) => {
 });
 
 // ========================================
+// ENDPOINT: RECIBIR LOGS DEL CLIENTE (REMOTE LOGGING)
+// ========================================
+app.post('/api/client-logs', (req, res) => {
+  try {
+    const { logs, deviceInfo } = req.body;
+
+    if (logs && Array.isArray(logs)) {
+      logs.forEach(log => {
+        const prefix = `[CLIENT ${deviceInfo?.platform || 'unknown'}]`;
+        const timestamp = new Date(log.timestamp).toLocaleTimeString('es-MX');
+        console.log(`${prefix} [${timestamp}] ${log.level.toUpperCase()}: ${log.message}`);
+        if (log.data) {
+          console.log(`${prefix} Data:`, JSON.stringify(log.data, null, 2));
+        }
+      });
+    }
+
+    res.json({ success: true, received: logs?.length || 0 });
+  } catch (error) {
+    console.error('[ERROR] Procesando logs del cliente:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
 // HEALTH CHECK
 // ========================================
 app.get('/health', (req, res) => {
