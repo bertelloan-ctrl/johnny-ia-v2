@@ -23,62 +23,127 @@ export default function TestCallScreen({ route, navigation }) {
   const audioInterval = useRef(null);
 
   useEffect(() => {
+    console.log('[APP] 🚀 Componente TestCallScreen montado');
+    console.log('[APP] 📋 Parámetros recibidos:', { clientId, clientName });
+    console.log('[APP] 📋 FileSystem.cacheDirectory:', FileSystem.cacheDirectory);
+
     requestPermissions();
+
     return () => {
-      if (recordingRef.current) recordingRef.current.stopAndUnloadAsync();
-      if (socket) socket.disconnect();
-      if (durationInterval.current) clearInterval(durationInterval.current);
-      if (audioInterval.current) clearInterval(audioInterval.current);
+      console.log('[APP] 🔄 Componente desmontándose, limpiando recursos...');
+      try {
+        if (recordingRef.current) {
+          recordingRef.current.stopAndUnloadAsync().catch(err =>
+            console.error('[APP] Error deteniendo grabación en cleanup:', err)
+          );
+        }
+        if (socket) {
+          socket.disconnect();
+          console.log('[APP] Socket desconectado en cleanup');
+        }
+        if (durationInterval.current) clearInterval(durationInterval.current);
+        if (audioInterval.current) clearInterval(audioInterval.current);
+      } catch (cleanupError) {
+        console.error('[APP] Error durante cleanup:', cleanupError);
+      }
     };
   }, []);
 
   const requestPermissions = async () => {
     try {
+      console.log('[APP] 🎤 Solicitando permisos de audio...');
       const { status } = await Audio.requestPermissionsAsync();
+      console.log('[APP] 📋 Estado de permisos:', status);
+
       if (status === 'granted') {
         setPermissionGranted(true);
-        await Audio.setAudioModeAsync({
-          allowsRecordingIOS: true,
-          playsInSilentModeIOS: true,
-        });
+        console.log('[APP] ✅ Permisos de audio otorgados');
+
+        try {
+          await Audio.setAudioModeAsync({
+            allowsRecordingIOS: true,
+            playsInSilentModeIOS: true,
+            staysActiveInBackground: false,
+            shouldDuckAndroid: true,
+            playThroughEarpieceAndroid: false,
+          });
+          console.log('[APP] ✅ Modo de audio configurado');
+        } catch (modeError) {
+          console.error('[APP ERROR] Error configurando modo de audio:', modeError);
+          // Continue anyway, don't block
+        }
       } else {
+        console.error('[APP ERROR] ❌ Permisos de audio denegados');
         Alert.alert('Permiso necesario', 'Necesitamos acceso al microfono');
       }
     } catch (error) {
-      console.error('Error permisos:', error);
+      console.error('[APP ERROR] ❌ Error solicitando permisos:', error);
+      console.error('[APP ERROR] Stack:', error.stack);
+      Alert.alert('Error', 'Error al solicitar permisos: ' + error.message);
     }
   };
 
   const startCall = async () => {
+    console.log('[APP] 📞 startCall() llamado');
+    console.log('[APP] 📋 Permisos otorgados:', permissionGranted);
+
     if (!permissionGranted) {
+      console.error('[APP ERROR] ❌ No hay permisos de audio');
       Alert.alert('Sin permisos', 'Activa el permiso del microfono');
       return;
     }
 
+    console.log('[APP] 🚀 Iniciando proceso de llamada...');
     addMessage('system', 'Iniciando llamada...');
 
     try {
-      const newSocket = io('https://johnny-ia-v2.onrender.com');
+      console.log('[APP] 🔌 Creando conexión Socket.IO...');
+      const newSocket = io('https://johnny-ia-v2.onrender.com', {
+        transports: ['websocket', 'polling'],
+        reconnection: true,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        reconnectionAttempts: 5,
+        timeout: 20000,
+      });
+      console.log('[APP] ✅ Socket creado, esperando conexión...');
 
       // Register ALL listeners BEFORE emitting any events
       newSocket.on('session-started', async (data) => {
-        console.log('[APP] ✅ Sesión iniciada:', data.sessionId);
-        console.log('[APP] 📋 Config recibida:', JSON.stringify(data.config, null, 2));
-
-        setSessionId(data.sessionId);
-        setCallActive(true);
-
-        durationInterval.current = setInterval(() => {
-          setCallDuration(prev => prev + 1);
-        }, 1000);
-
-        console.log('[APP] 🎤 Iniciando grabación continua...');
         try {
-          await startContinuousRecording(newSocket, data.sessionId);
-          console.log('[APP] ✅ Grabación iniciada exitosamente');
+          console.log('[APP] ✅ Sesión iniciada:', data?.sessionId || 'sin ID');
+          console.log('[APP] 📋 Config recibida:', JSON.stringify(data?.config || {}, null, 2));
+
+          if (!data || !data.sessionId) {
+            console.error('[APP ERROR] ⚠️ session-started sin sessionId válido');
+            addMessage('system', 'Error: sesión inválida');
+            return;
+          }
+
+          setSessionId(data.sessionId);
+          setCallActive(true);
+          addMessage('system', '✅ Sesión iniciada: ' + data.sessionId);
+
+          durationInterval.current = setInterval(() => {
+            setCallDuration(prev => prev + 1);
+          }, 1000);
+
+          console.log('[APP] 🎤 Iniciando grabación continua...');
+          try {
+            await startContinuousRecording(newSocket, data.sessionId);
+            console.log('[APP] ✅ Grabación iniciada exitosamente');
+            addMessage('system', '🎤 Grabación iniciada');
+          } catch (error) {
+            console.error('[APP ERROR] ❌ Error al iniciar grabación:', error);
+            console.error('[APP ERROR] Stack:', error.stack);
+            addMessage('system', 'Error al iniciar grabación: ' + error.message);
+            // Don't crash, continue
+          }
         } catch (error) {
-          console.error('[APP ERROR] Error al iniciar grabación:', error);
-          addMessage('system', 'Error al iniciar grabación: ' + error.message);
+          console.error('[APP ERROR] ❌ Error en handler de session-started:', error);
+          console.error('[APP ERROR] Stack:', error.stack);
+          addMessage('system', 'Error al procesar inicio de sesión: ' + error.message);
+          // Don't crash
         }
       });
 
@@ -94,44 +159,152 @@ export default function TestCallScreen({ route, navigation }) {
 
       newSocket.on('agent-audio', async (data) => {
         try {
-          console.log('[APP] Audio recibido del servidor, tamaño:', data.audioBase64.length);
+          console.log('[APP] 🎵 Audio recibido del servidor');
+          console.log('[APP] 📊 Tamaño del audio base64:', data?.audioBase64?.length || 'undefined');
+
+          // Validate audio data
+          if (!data || !data.audioBase64 || data.audioBase64.length === 0) {
+            console.error('[APP ERROR] ⚠️ Audio data inválido o vacío');
+            addMessage('system', 'Error: audio inválido recibido');
+            return; // Don't crash, just return
+          }
+
+          // Validate FileSystem.cacheDirectory
+          if (!FileSystem.cacheDirectory) {
+            console.error('[APP ERROR] ⚠️ FileSystem.cacheDirectory no está disponible');
+            addMessage('system', 'Error: no se puede acceder al almacenamiento temporal');
+            return;
+          }
+
+          console.log('[APP] 📁 Cache directory:', FileSystem.cacheDirectory);
 
           // Pausar grabación mientras se reproduce el audio del agente
           const wasRecording = !!recordingRef.current;
           if (wasRecording) {
-            await recordingRef.current.pauseAsync();
-            console.log('[APP] Grabación pausada para reproducir audio');
+            try {
+              await recordingRef.current.pauseAsync();
+              console.log('[APP] ⏸️ Grabación pausada para reproducir audio');
+            } catch (pauseError) {
+              console.error('[APP ERROR] Error al pausar grabación:', pauseError);
+              // Continue anyway, don't crash
+            }
           }
 
           // Save audio to temporary file instead of using data URI
           const fileUri = FileSystem.cacheDirectory + `agent_audio_${Date.now()}.wav`;
-          await FileSystem.writeAsStringAsync(fileUri, data.audioBase64, {
-            encoding: FileSystem.EncodingType.Base64,
-          });
+          console.log('[APP] 💾 Guardando audio en:', fileUri);
 
-          const { sound } = await Audio.Sound.createAsync(
-            { uri: fileUri },
-            { shouldPlay: true, volume: 1.0 }
-          );
+          try {
+            await FileSystem.writeAsStringAsync(fileUri, data.audioBase64, {
+              encoding: FileSystem.EncodingType.Base64,
+            });
+            console.log('[APP] ✅ Audio guardado exitosamente');
+          } catch (writeError) {
+            console.error('[APP ERROR] ❌ Error al escribir archivo de audio:', writeError);
+            console.error('[APP ERROR] Detalles del error de escritura:', JSON.stringify(writeError, null, 2));
+            addMessage('system', 'Error al guardar audio: ' + writeError.message);
+            return; // Don't crash, just return
+          }
 
-          console.log('[APP] Reproduciendo audio del agente...');
-          await sound.playAsync();
+          // Verify file was created
+          try {
+            const fileInfo = await FileSystem.getInfoAsync(fileUri);
+            console.log('[APP] 📋 Info del archivo:', JSON.stringify(fileInfo, null, 2));
+            if (!fileInfo.exists) {
+              console.error('[APP ERROR] ❌ El archivo no fue creado');
+              addMessage('system', 'Error: archivo de audio no fue creado');
+              return;
+            }
+          } catch (infoError) {
+            console.error('[APP ERROR] Error al verificar archivo:', infoError);
+            // Continue anyway
+          }
+
+          // Create and play sound
+          let sound = null;
+          try {
+            console.log('[APP] 🔊 Creando objeto de sonido...');
+            const soundObject = await Audio.Sound.createAsync(
+              { uri: fileUri },
+              { shouldPlay: false, volume: 1.0 } // Don't autoplay, control manually
+            );
+            sound = soundObject.sound;
+            console.log('[APP] ✅ Objeto de sonido creado');
+          } catch (createError) {
+            console.error('[APP ERROR] ❌ Error al crear sonido:', createError);
+            console.error('[APP ERROR] Detalles:', JSON.stringify(createError, null, 2));
+            addMessage('system', 'Error al crear audio: ' + createError.message);
+            // Clean up file
+            try {
+              await FileSystem.deleteAsync(fileUri, { idempotent: true });
+            } catch (delErr) {
+              console.error('[APP ERROR] Error al eliminar archivo temporal:', delErr);
+            }
+            return;
+          }
+
+          try {
+            console.log('[APP] ▶️ Reproduciendo audio del agente...');
+            await sound.playAsync();
+            console.log('[APP] ✅ Audio comenzó a reproducirse');
+            addMessage('system', '🔊 Reproduciendo respuesta del vendedor');
+          } catch (playError) {
+            console.error('[APP ERROR] ❌ Error al reproducir audio:', playError);
+            console.error('[APP ERROR] Detalles:', JSON.stringify(playError, null, 2));
+            addMessage('system', 'Error al reproducir audio: ' + playError.message);
+            // Clean up
+            try {
+              await sound.unloadAsync();
+              await FileSystem.deleteAsync(fileUri, { idempotent: true });
+            } catch (cleanupErr) {
+              console.error('[APP ERROR] Error en limpieza:', cleanupErr);
+            }
+            return;
+          }
 
           // Esperar a que termine de reproducir
           sound.setOnPlaybackStatusUpdate(async (status) => {
-            if (status.didJustFinish) {
-              console.log('[APP] Audio terminado, resumiendo grabación');
-              await sound.unloadAsync();
-              // Delete temporary file
-              await FileSystem.deleteAsync(fileUri, { idempotent: true });
-              if (wasRecording && recordingRef.current) {
-                recordingRef.current.startAsync();
+            try {
+              if (status.didJustFinish) {
+                console.log('[APP] ✅ Audio terminado, limpiando...');
+
+                // Unload sound
+                try {
+                  await sound.unloadAsync();
+                  console.log('[APP] ✅ Sonido descargado');
+                } catch (unloadErr) {
+                  console.error('[APP ERROR] Error al descargar sonido:', unloadErr);
+                }
+
+                // Delete temporary file
+                try {
+                  await FileSystem.deleteAsync(fileUri, { idempotent: true });
+                  console.log('[APP] ✅ Archivo temporal eliminado');
+                } catch (delErr) {
+                  console.error('[APP ERROR] Error al eliminar archivo:', delErr);
+                }
+
+                // Resume recording
+                if (wasRecording && recordingRef.current) {
+                  try {
+                    await recordingRef.current.startAsync();
+                    console.log('[APP] ▶️ Grabación resumida');
+                  } catch (resumeErr) {
+                    console.error('[APP ERROR] Error al resumir grabación:', resumeErr);
+                  }
+                }
               }
+            } catch (statusError) {
+              console.error('[APP ERROR] Error en callback de status:', statusError);
+              // Don't crash the app
             }
           });
         } catch (error) {
-          console.error('[APP ERROR] Reproduciendo audio:', error);
-          console.error('[APP ERROR] Detalles:', JSON.stringify(error, null, 2));
+          console.error('[APP ERROR] ❌ Error general reproduciendo audio:', error);
+          console.error('[APP ERROR] Stack:', error.stack);
+          console.error('[APP ERROR] Detalles completos:', JSON.stringify(error, null, 2));
+          addMessage('system', 'Error inesperado en audio: ' + error.message);
+          // DON'T disconnect or crash - keep the component alive
         }
       });
 
@@ -140,18 +313,69 @@ export default function TestCallScreen({ route, navigation }) {
         addMessage('system', 'Error: ' + data.message);
       });
 
-      newSocket.on('disconnect', () => {
-        console.log('Desconectado');
-        endCall();
+      newSocket.on('disconnect', (reason) => {
+        console.log('[APP] ⚠️ Socket desconectado');
+        console.log('[APP] 📋 Razón de desconexión:', reason);
+        console.log('[APP] 📋 Estado de la llamada:', callActive);
+        console.log('[APP] 📋 Socket ID:', newSocket?.id);
+
+        // Only end call if it was an error disconnect, not a normal one
+        if (reason === 'io server disconnect' || reason === 'io client disconnect') {
+          console.log('[APP] ℹ️ Desconexión normal del servidor');
+          addMessage('system', 'Desconectado del servidor: ' + reason);
+          // Don't immediately end the call, let the user decide
+        } else if (reason === 'transport close' || reason === 'transport error') {
+          console.log('[APP] ❌ Error de transporte');
+          addMessage('system', 'Error de conexión: ' + reason);
+          // Keep the UI alive, don't call endCall()
+        } else {
+          console.log('[APP] ⚠️ Desconexión inesperada:', reason);
+          addMessage('system', 'Desconectado inesperadamente: ' + reason);
+        }
+
+        // DON'T call endCall() automatically - keep the component alive for debugging
+        // endCall();
+      });
+
+      // Handle connection errors
+      newSocket.on('connect_error', (error) => {
+        console.error('[APP] ❌ Error de conexión Socket.IO:', error);
+        console.error('[APP] Error message:', error.message);
+        console.error('[APP] Error stack:', error.stack);
+        addMessage('system', 'Error de conexión: ' + error.message);
+      });
+
+      newSocket.on('connect_timeout', () => {
+        console.error('[APP] ⏱️ Timeout de conexión Socket.IO');
+        addMessage('system', 'Timeout: no se pudo conectar al servidor');
+      });
+
+      newSocket.on('reconnect_attempt', (attemptNumber) => {
+        console.log('[APP] 🔄 Intento de reconexión #' + attemptNumber);
+        addMessage('system', 'Intentando reconectar... (' + attemptNumber + ')');
+      });
+
+      newSocket.on('reconnect_error', (error) => {
+        console.error('[APP] ❌ Error de reconexión:', error);
+        addMessage('system', 'Error al reconectar: ' + error.message);
+      });
+
+      newSocket.on('reconnect_failed', () => {
+        console.error('[APP] ❌ Falló la reconexión');
+        addMessage('system', 'No se pudo reconectar al servidor');
       });
 
       // Register 'connect' listener LAST, after all other listeners are ready
       newSocket.on('connect', () => {
-        console.log('Conectado con Socket.IO');
-        addMessage('system', 'Llamada conectada');
+        console.log('[APP] ✅ Conectado con Socket.IO');
+        console.log('[APP] 📋 Socket ID:', newSocket.id);
+        console.log('[APP] 📋 Socket conectado:', newSocket.connected);
+        addMessage('system', '✅ Conectado al servidor');
 
         // Now that all listeners are registered, emit the event
+        console.log('[APP] 📤 Emitiendo start-test-session con clientId:', clientId);
         newSocket.emit('start-test-session', { clientId });
+        console.log('[APP] ✅ Evento start-test-session emitido');
       });
 
       setSocket(newSocket);
