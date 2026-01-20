@@ -251,10 +251,12 @@ io.on('connection', (socket) => {
 
       console.log('✅ Configuración cargada para', clientId + ':', clientConfig.company_name);
 
+      console.log('[SERVER] 📤 Enviando evento session-started al cliente...');
       socket.emit('session-started', {
         sessionId,
         config: clientConfig
       });
+      console.log('[SERVER] ✅ Evento session-started enviado');
 
       // Conectar con OpenAI Realtime
       const openaiUrl = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17';
@@ -433,9 +435,13 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', () => {
-    console.log('[WS] Cliente desconectado');
-    if (openaiWs) openaiWs.close();
+  socket.on('disconnect', (reason) => {
+    console.log('[WS] Cliente desconectado - Razón:', reason);
+    console.log('[WS] Socket ID:', socket.id);
+    if (openaiWs) {
+      console.log('[WS] Cerrando conexión con OpenAI');
+      openaiWs.close();
+    }
   });
 });
 
