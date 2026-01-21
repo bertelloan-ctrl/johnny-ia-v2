@@ -460,6 +460,18 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Handler para recibir logs del cliente via Socket.IO
+  socket.on('client-log', (logData) => {
+    const timestamp = new Date(logData.timestamp || Date.now()).toLocaleTimeString('es-MX');
+    const level = (logData.level || 'log').toUpperCase();
+    const prefix = `[CLIENT ${logData.platform || 'unknown'}]`;
+
+    console.log(`${prefix} [${timestamp}] ${level}: ${logData.message}`);
+    if (logData.data) {
+      console.log(`${prefix} Data:`, JSON.stringify(logData.data, null, 2));
+    }
+  });
+
   socket.on('disconnect', (reason) => {
     console.log('[WS] Cliente desconectado - Razón:', reason);
     console.log('[WS] Socket ID:', socket.id);

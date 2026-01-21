@@ -1,10 +1,26 @@
-// UPDATED VERSION 4.0 - WITH REMOTE LOGGING
+// UPDATED VERSION 5.0 - LOGS VIA SOCKET.IO
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert } from 'react-native';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, Alert, Platform } from 'react-native';
 import { Audio } from 'expo-av';
 import * as FileSystem from 'expo-file-system';
 import io from 'socket.io-client';
-import remoteLogger from '../utils/RemoteLogger';
+
+// Helper para enviar logs al servidor via Socket.IO
+const logToServer = (socket, level, message, data = null) => {
+  try {
+    if (socket && socket.connected) {
+      socket.emit('client-log', {
+        level,
+        message,
+        data,
+        timestamp: new Date().toISOString(),
+        platform: Platform.OS,
+      });
+    }
+  } catch (err) {
+    console.error('[LOG ERROR]', err);
+  }
+};
 
 export default function TestCallScreen({ route, navigation }) {
   const { clientId, clientName } = route.params;
@@ -26,29 +42,23 @@ export default function TestCallScreen({ route, navigation }) {
   useEffect(() => {
     console.log('═══════════════════════════════════════════════════════════');
     console.log('[APP] 🚀 COMPONENTE TESTCALLSCREEN MONTADO');
-    console.log('[APP] 📡 REMOTE LOGGER ACTIVO - Los logs se enviarán al servidor');
-    console.log('[APP] 📋 Parámetros recibidos:', JSON.stringify({ clientId, clientName }));
+    console.log('[APP] 📋 Parámetros:', { clientId, clientName });
     console.log('[APP] 📁 FileSystem.cacheDirectory:', FileSystem.cacheDirectory);
     console.log('═══════════════════════════════════════════════════════════');
 
     requestPermissions();
 
     return () => {
-      console.log('[APP] 🔄 Componente desmontándose, limpiando recursos...');
+      console.log('[APP] 🔄 Limpiando recursos...');
       try {
-        // Enviar todos los logs pendientes antes de cerrar
-        remoteLogger.forceFlush().catch(err =>
-          console.error('[APP] Error enviando logs finales:', err)
-        );
-
         if (recordingRef.current) {
           recordingRef.current.stopAndUnloadAsync().catch(err =>
-            console.error('[APP] Error deteniendo grabación en cleanup:', err)
+            console.error('[APP] Error deteniendo grabación:', err)
           );
         }
         if (socket) {
+          logToServer(socket, 'log', 'Componente desmontándose');
           socket.disconnect();
-          console.log('[APP] Socket desconectado en cleanup');
         }
         if (durationInterval.current) clearInterval(durationInterval.current);
         if (audioInterval.current) clearInterval(audioInterval.current);
@@ -117,14 +127,18 @@ export default function TestCallScreen({ route, navigation }) {
       });
       console.log('[APP] ✅ Socket creado, esperando conexión...');
 
+      // Enviar log inicial apenas se crea el socket
+      setTimeout(() => logToServer(newSocket, 'log', '🚀 Socket creado, esperando conexión'), 100);
+
       // Register ALL listeners BEFORE emitting any events
       newSocket.on('session-started', async (data) => {
         try {
           console.log('[APP] ✅ Sesión iniciada:', data?.sessionId || 'sin ID');
-          console.log('[APP] 📋 Config recibida:', JSON.stringify(data?.config || {}, null, 2));
+          logToServer(newSocket, 'log', '✅ SESIÓN INICIADA: ' + (data?.sessionId || 'sin ID'));
 
           if (!data || !data.sessionId) {
             console.error('[APP ERROR] ⚠️ session-started sin sessionId válido');
+            logToServer(newSocket, 'error', '⚠️ session-started sin sessionId válido');
             addMessage('system', 'Error: sesión inválida');
             return;
           }
@@ -138,19 +152,21 @@ export default function TestCallScreen({ route, navigation }) {
           }, 1000);
 
           console.log('[APP] 🎤 Iniciando grabación continua...');
+          logToServer(newSocket, 'log', '🎤 Iniciando grabación continua...');
           try {
             await startContinuousRecording(newSocket, data.sessionId);
             console.log('[APP] ✅ Grabación iniciada exitosamente');
+            logToServer(newSocket, 'log', '✅ Grabación iniciada exitosamente');
             addMessage('system', '🎤 Grabación iniciada');
           } catch (error) {
             console.error('[APP ERROR] ❌ Error al iniciar grabación:', error);
-            console.error('[APP ERROR] Stack:', error.stack);
+            logToServer(newSocket, 'error', '❌ Error al iniciar grabación: ' + error.message, { stack: error.stack });
             addMessage('system', 'Error al iniciar grabación: ' + error.message);
             // Don't crash, continue
           }
         } catch (error) {
           console.error('[APP ERROR] ❌ Error en handler de session-started:', error);
-          console.error('[APP ERROR] Stack:', error.stack);
+          logToServer(newSocket, 'error', '❌ Error en handler de session-started: ' + error.message, { stack: error.stack });
           addMessage('system', 'Error al procesar inicio de sesión: ' + error.message);
           // Don't crash
         }
@@ -169,11 +185,12 @@ export default function TestCallScreen({ route, navigation }) {
       newSocket.on('agent-audio', async (data) => {
         try {
           console.log('[APP] 🎵 Audio recibido del servidor');
-          console.log('[APP] 📊 Tamaño del audio base64:', data?.audioBase64?.length || 'undefined');
+          logToServer(newSocket, 'log', '🎵 AUDIO RECIBIDO del servidor - Tamaño: ' + (data?.audioBase64?.length || 0));
 
           // Validate audio data
           if (!data || !data.audioBase64 || data.audioBase64.length === 0) {
             console.error('[APP ERROR] ⚠️ Audio data inválido o vacío');
+            logToServer(newSocket, 'error', '⚠️ Audio data inválido o vacío');
             addMessage('system', 'Error: audio inválido recibido');
             return; // Don't crash, just return
           }
@@ -181,11 +198,13 @@ export default function TestCallScreen({ route, navigation }) {
           // Validate FileSystem.cacheDirectory
           if (!FileSystem.cacheDirectory) {
             console.error('[APP ERROR] ⚠️ FileSystem.cacheDirectory no está disponible');
+            logToServer(newSocket, 'error', '⚠️ FileSystem.cacheDirectory no disponible');
             addMessage('system', 'Error: no se puede acceder al almacenamiento temporal');
             return;
           }
 
           console.log('[APP] 📁 Cache directory:', FileSystem.cacheDirectory);
+          logToServer(newSocket, 'log', '📁 Cache directory OK: ' + FileSystem.cacheDirectory);
 
           // Pausar grabación mientras se reproduce el audio del agente
           const wasRecording = !!recordingRef.current;
@@ -208,9 +227,10 @@ export default function TestCallScreen({ route, navigation }) {
               encoding: FileSystem.EncodingType.Base64,
             });
             console.log('[APP] ✅ Audio guardado exitosamente');
+            logToServer(newSocket, 'log', '✅ Audio guardado exitosamente en: ' + fileUri);
           } catch (writeError) {
             console.error('[APP ERROR] ❌ Error al escribir archivo de audio:', writeError);
-            console.error('[APP ERROR] Detalles del error de escritura:', JSON.stringify(writeError, null, 2));
+            logToServer(newSocket, 'error', '❌ Error al escribir archivo: ' + writeError.message, { stack: writeError.stack });
             addMessage('system', 'Error al guardar audio: ' + writeError.message);
             return; // Don't crash, just return
           }
@@ -233,15 +253,17 @@ export default function TestCallScreen({ route, navigation }) {
           let sound = null;
           try {
             console.log('[APP] 🔊 Creando objeto de sonido...');
+            logToServer(newSocket, 'log', '🔊 Creando objeto de sonido...');
             const soundObject = await Audio.Sound.createAsync(
               { uri: fileUri },
               { shouldPlay: false, volume: 1.0 } // Don't autoplay, control manually
             );
             sound = soundObject.sound;
             console.log('[APP] ✅ Objeto de sonido creado');
+            logToServer(newSocket, 'log', '✅ Objeto de sonido creado exitosamente');
           } catch (createError) {
             console.error('[APP ERROR] ❌ Error al crear sonido:', createError);
-            console.error('[APP ERROR] Detalles:', JSON.stringify(createError, null, 2));
+            logToServer(newSocket, 'error', '❌ Error al crear sonido: ' + createError.message, { stack: createError.stack });
             addMessage('system', 'Error al crear audio: ' + createError.message);
             // Clean up file
             try {
@@ -254,12 +276,14 @@ export default function TestCallScreen({ route, navigation }) {
 
           try {
             console.log('[APP] ▶️ Reproduciendo audio del agente...');
+            logToServer(newSocket, 'log', '▶️ Reproduciendo audio del agente...');
             await sound.playAsync();
             console.log('[APP] ✅ Audio comenzó a reproducirse');
+            logToServer(newSocket, 'log', '✅ Audio comenzó a reproducirse');
             addMessage('system', '🔊 Reproduciendo respuesta del vendedor');
           } catch (playError) {
             console.error('[APP ERROR] ❌ Error al reproducir audio:', playError);
-            console.error('[APP ERROR] Detalles:', JSON.stringify(playError, null, 2));
+            logToServer(newSocket, 'error', '❌ Error al reproducir audio: ' + playError.message, { stack: playError.stack });
             addMessage('system', 'Error al reproducir audio: ' + playError.message);
             // Clean up
             try {
@@ -310,8 +334,7 @@ export default function TestCallScreen({ route, navigation }) {
           });
         } catch (error) {
           console.error('[APP ERROR] ❌ Error general reproduciendo audio:', error);
-          console.error('[APP ERROR] Stack:', error.stack);
-          console.error('[APP ERROR] Detalles completos:', JSON.stringify(error, null, 2));
+          logToServer(newSocket, 'error', '❌ Error GENERAL reproduciendo audio: ' + error.message, { stack: error.stack });
           addMessage('system', 'Error inesperado en audio: ' + error.message);
           // DON'T disconnect or crash - keep the component alive
         }
@@ -323,24 +346,9 @@ export default function TestCallScreen({ route, navigation }) {
       });
 
       newSocket.on('disconnect', (reason) => {
-        console.log('[APP] ⚠️ Socket desconectado');
-        console.log('[APP] 📋 Razón de desconexión:', reason);
-        console.log('[APP] 📋 Estado de la llamada:', callActive);
-        console.log('[APP] 📋 Socket ID:', newSocket?.id);
-
-        // Only end call if it was an error disconnect, not a normal one
-        if (reason === 'io server disconnect' || reason === 'io client disconnect') {
-          console.log('[APP] ℹ️ Desconexión normal del servidor');
-          addMessage('system', 'Desconectado del servidor: ' + reason);
-          // Don't immediately end the call, let the user decide
-        } else if (reason === 'transport close' || reason === 'transport error') {
-          console.log('[APP] ❌ Error de transporte');
-          addMessage('system', 'Error de conexión: ' + reason);
-          // Keep the UI alive, don't call endCall()
-        } else {
-          console.log('[APP] ⚠️ Desconexión inesperada:', reason);
-          addMessage('system', 'Desconectado inesperadamente: ' + reason);
-        }
+        console.log('[APP] ⚠️ Socket desconectado - Razón:', reason);
+        logToServer(newSocket, 'warn', '⚠️ SOCKET DESCONECTADO - Razón: ' + reason);
+        addMessage('system', 'Desconectado: ' + reason);
 
         // DON'T call endCall() automatically - keep the component alive for debugging
         // endCall();
@@ -349,28 +357,31 @@ export default function TestCallScreen({ route, navigation }) {
       // Handle connection errors
       newSocket.on('connect_error', (error) => {
         console.error('[APP] ❌ Error de conexión Socket.IO:', error);
-        console.error('[APP] Error message:', error.message);
-        console.error('[APP] Error stack:', error.stack);
+        logToServer(newSocket, 'error', '❌ Error de conexión: ' + error.message, { stack: error.stack });
         addMessage('system', 'Error de conexión: ' + error.message);
       });
 
       newSocket.on('connect_timeout', () => {
         console.error('[APP] ⏱️ Timeout de conexión Socket.IO');
+        logToServer(newSocket, 'error', '⏱️ Timeout de conexión Socket.IO');
         addMessage('system', 'Timeout: no se pudo conectar al servidor');
       });
 
       newSocket.on('reconnect_attempt', (attemptNumber) => {
         console.log('[APP] 🔄 Intento de reconexión #' + attemptNumber);
+        logToServer(newSocket, 'log', '🔄 Intento de reconexión #' + attemptNumber);
         addMessage('system', 'Intentando reconectar... (' + attemptNumber + ')');
       });
 
       newSocket.on('reconnect_error', (error) => {
         console.error('[APP] ❌ Error de reconexión:', error);
+        logToServer(newSocket, 'error', '❌ Error de reconexión: ' + error.message);
         addMessage('system', 'Error al reconectar: ' + error.message);
       });
 
       newSocket.on('reconnect_failed', () => {
         console.error('[APP] ❌ Falló la reconexión');
+        logToServer(newSocket, 'error', '❌ Falló la reconexión');
         addMessage('system', 'No se pudo reconectar al servidor');
       });
 
@@ -379,10 +390,13 @@ export default function TestCallScreen({ route, navigation }) {
         console.log('[APP] ✅ Conectado con Socket.IO');
         console.log('[APP] 📋 Socket ID:', newSocket.id);
         console.log('[APP] 📋 Socket conectado:', newSocket.connected);
+
+        logToServer(newSocket, 'log', '✅ CONECTADO con Socket.IO - ID: ' + newSocket.id);
         addMessage('system', '✅ Conectado al servidor');
 
         // Now that all listeners are registered, emit the event
         console.log('[APP] 📤 Emitiendo start-test-session con clientId:', clientId);
+        logToServer(newSocket, 'log', '📤 Emitiendo start-test-session con clientId: ' + clientId);
         newSocket.emit('start-test-session', { clientId });
         console.log('[APP] ✅ Evento start-test-session emitido');
       });
