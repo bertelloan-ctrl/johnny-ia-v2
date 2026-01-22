@@ -248,7 +248,239 @@ const io = new Server(server, {
 const testSessions = new Map();
 
 // ========================================
-// WEBSOCKET PARA PRUEBAS CON OPENAI
+// SISTEMA DE COLAS PARA HTTP POLLING
+// ========================================
+const sessionQueues = new Map(); // sessionId -> array de mensajes
+const sessionConnections = new Map(); // sessionId -> { openaiWs, clientConfig, lastPoll }
+
+// Limpiar sesiones inactivas cada 5 minutos
+setInterval(() => {
+  const now = Date.now();
+  for (const [sessionId, data] of sessionConnections.entries()) {
+    if (data.lastPoll && (now - data.lastPoll) > 300000) { // 5 minutos sin polling
+      console.log('[CLEANUP] Limpiando sesión inactiva:', sessionId);
+      if (data.openaiWs) data.openaiWs.close();
+      sessionConnections.delete(sessionId);
+      sessionQueues.delete(sessionId);
+    }
+  }
+}, 300000);
+
+// Helper: agregar mensaje a la cola
+function addMessageToQueue(sessionId, message) {
+  if (!sessionQueues.has(sessionId)) {
+    sessionQueues.set(sessionId, []);
+  }
+  sessionQueues.get(sessionId).push(message);
+  console.log('[QUEUE] Mensaje agregado a cola de', sessionId, '- Tipo:', message.type);
+}
+
+// ========================================
+// ENDPOINT: POLLING DE MENSAJES
+// ========================================
+app.get('/api/poll-messages/:sessionId', (req, res) => {
+  const { sessionId } = req.params;
+
+  // Actualizar timestamp de último poll
+  if (sessionConnections.has(sessionId)) {
+    sessionConnections.get(sessionId).lastPoll = Date.now();
+  }
+
+  // Obtener y vaciar cola
+  const messages = sessionQueues.get(sessionId) || [];
+  sessionQueues.set(sessionId, []);
+
+  res.json({ messages });
+});
+
+// ========================================
+// ENDPOINT: INICIAR SESIÓN DE PRUEBA
+// ========================================
+app.post('/api/start-test-session', async (req, res) => {
+  const { clientId } = req.body;
+  const sessionId = 'test_' + Date.now();
+
+  console.log('[TEST] Sesión iniciada via HTTP:', sessionId, 'Cliente:', clientId);
+
+  try {
+    const { data: config, error } = await supabase
+      .from('johnny_clients')
+      .select('*')
+      .eq('client_id', clientId)
+      .single();
+
+    if (error) throw error;
+
+    console.log('✅ Configuración cargada para', clientId + ':', config.company_name);
+
+    // Conectar con OpenAI Realtime
+    const openaiUrl = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17';
+
+    const openaiWs = new WebSocket(openaiUrl, {
+      headers: {
+        'Authorization': 'Bearer ' + process.env.OPENAI_API_KEY,
+        'OpenAI-Beta': 'realtime=v1'
+      }
+    });
+
+    openaiWs.on('open', () => {
+      console.log('[TEST] ✅ Conectado a OpenAI');
+
+      // Configurar sesión
+      openaiWs.send(JSON.stringify({
+        type: 'session.update',
+        session: {
+          modalities: ['text', 'audio'],
+          instructions: config.sales_script || 'Eres un asistente de ventas.',
+          voice: 'alloy',
+          input_audio_format: 'pcm16',
+          output_audio_format: 'pcm16',
+          input_audio_transcription: { model: 'whisper-1' },
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 500
+          }
+        }
+      }));
+
+      // Agregar mensaje inicial a la cola
+      addMessageToQueue(sessionId, {
+        type: 'session-started',
+        sessionId,
+        config
+      });
+    });
+
+    openaiWs.on('message', (message) => {
+      try {
+        const event = JSON.parse(message.toString());
+        console.log('[OPENAI EVENT]:', event.type);
+
+        if (event.type === 'response.audio.delta' && event.delta) {
+          // Convertir PCM16 a WAV
+          try {
+            const wavBase64 = pcm16ToWav(event.delta);
+            addMessageToQueue(sessionId, {
+              type: 'agent-audio',
+              audioBase64: wavBase64
+            });
+            console.log('[QUEUE] Audio agregado a cola, tamaño WAV:', wavBase64.length);
+          } catch (conversionError) {
+            console.error('[ERROR] Convirtiendo audio:', conversionError);
+          }
+        }
+
+        if (event.type === 'response.audio_transcript.done') {
+          console.log('[AGENT TRANSCRIPT]:', event.transcript);
+          addMessageToQueue(sessionId, {
+            type: 'agent-message',
+            text: event.transcript
+          });
+        }
+
+        if (event.type === 'conversation.item.input_audio_transcription.completed') {
+          console.log('[USER TRANSCRIPT]:', event.transcript);
+          addMessageToQueue(sessionId, {
+            type: 'user-message',
+            text: event.transcript
+          });
+        }
+
+      } catch (err) {
+        console.error('[ERROR] Procesando evento OpenAI:', err);
+      }
+    });
+
+    openaiWs.on('error', (error) => {
+      console.error('[OPENAI ERROR]:', error.message);
+      addMessageToQueue(sessionId, {
+        type: 'error',
+        message: error.message
+      });
+    });
+
+    openaiWs.on('close', (code, reason) => {
+      console.log('[OPENAI] Desconectado - Codigo:', code, 'Razon:', reason.toString());
+      sessionConnections.delete(sessionId);
+    });
+
+    // Guardar conexión
+    sessionConnections.set(sessionId, {
+      openaiWs,
+      clientConfig: config,
+      lastPoll: Date.now()
+    });
+
+    res.json({ success: true, sessionId });
+
+  } catch (error) {
+    console.error('[ERROR] Iniciando sesión:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
+// ENDPOINT: ENVIAR AUDIO DEL USUARIO
+// ========================================
+app.post('/api/send-audio', async (req, res) => {
+  const { sessionId, audioBase64 } = req.body;
+
+  const sessionData = sessionConnections.get(sessionId);
+  if (!sessionData || !sessionData.openaiWs) {
+    return res.status(400).json({ success: false, error: 'Sesión no encontrada' });
+  }
+
+  const { openaiWs } = sessionData;
+
+  if (openaiWs.readyState !== 1) {
+    return res.status(400).json({ success: false, error: 'OpenAI no conectado' });
+  }
+
+  try {
+    // El cliente envía WAV, extraer PCM16
+    const wavBuffer = Buffer.from(audioBase64, 'base64');
+    const pcm16Data = wavBuffer.slice(44);
+    const pcm16Base64 = pcm16Data.toString('base64');
+
+    console.log('[AUDIO] Recibido WAV:', wavBuffer.length, 'bytes, PCM16:', pcm16Data.length, 'bytes');
+
+    openaiWs.send(JSON.stringify({
+      type: 'input_audio_buffer.append',
+      audio: pcm16Base64
+    }));
+
+    console.log('[AUDIO] Audio PCM16 enviado a OpenAI');
+
+    // Hacer commit y solicitar respuesta
+    setTimeout(() => {
+      if (openaiWs && openaiWs.readyState === 1) {
+        openaiWs.send(JSON.stringify({
+          type: 'input_audio_buffer.commit'
+        }));
+
+        openaiWs.send(JSON.stringify({
+          type: 'response.create',
+          response: {
+            modalities: ['text', 'audio']
+          }
+        }));
+
+        console.log('[AUDIO] Commit y respuesta solicitada');
+      }
+    }, 500);
+
+    res.json({ success: true });
+
+  } catch (error) {
+    console.error('[ERROR] Procesando audio:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// ========================================
+// WEBSOCKET PARA PRUEBAS CON OPENAI (LEGACY - MANTENER POR COMPATIBILIDAD)
 // ========================================
 io.on('connection', (socket) => {
   console.log('[WS] Cliente conectado:', socket.id);
