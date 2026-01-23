@@ -19,6 +19,9 @@ const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 app.use(cors());
 app.use(express.json());
 
+// Servir archivos estáticos desde la carpeta public
+app.use(express.static('public'));
+
 // Inicializar Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
