@@ -4,8 +4,16 @@ const { Server } = require('socket.io');
 const cors = require('cors');
 require('dotenv').config();
 const WebSocket = require('ws');
+const Twilio = require('twilio');
 const app = express();
 const PORT = process.env.PORT || 8080;
+
+// Inicializar Twilio
+const twilioClient = new Twilio(
+  process.env.TWILIO_ACCOUNT_SID,
+  process.env.TWILIO_AUTH_TOKEN
+);
+const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
 
 // Habilitar CORS para todas las solicitudes
 app.use(cors());
@@ -222,6 +230,103 @@ app.post('/api/client-logs', (req, res) => {
 });
 
 // ========================================
+// ENDPOINT: INICIAR LLAMADA DE PRUEBA CON TWILIO
+// ========================================
+app.post('/api/test-call', async (req, res) => {
+  const { clientId, phoneNumber } = req.body;
+
+  console.log('[TWILIO TEST] Iniciando llamada de prueba');
+  console.log('[TWILIO TEST] Cliente:', clientId);
+  console.log('[TWILIO TEST] Número:', phoneNumber);
+
+  try {
+    // Validar número de teléfono
+    if (!phoneNumber || !phoneNumber.startsWith('+')) {
+      return res.status(400).json({
+        success: false,
+        error: 'El número debe incluir código de país (ej: +52...)'
+      });
+    }
+
+    // Obtener configuración del cliente
+    const { data: config, error: configError } = await supabase
+      .from('johnny_clients')
+      .select('*')
+      .eq('client_id', clientId)
+      .single();
+
+    if (configError || !config) {
+      console.error('[TWILIO TEST ERROR] No se encontró configuración:', configError);
+      return res.status(404).json({
+        success: false,
+        error: 'No se encontró configuración del cliente'
+      });
+    }
+
+    console.log('[TWILIO TEST] ✅ Configuración cargada:', config.company_name);
+
+    // Crear la llamada con Twilio
+    const call = await twilioClient.calls.create({
+      to: phoneNumber,
+      from: TWILIO_PHONE_NUMBER,
+      url: `https://${req.headers.host}/api/twilio-test-call?client_id=${clientId}`,
+      statusCallback: `https://${req.headers.host}/api/twilio-status`,
+      statusCallbackEvent: ['initiated', 'ringing', 'answered', 'completed'],
+      method: 'POST'
+    });
+
+    console.log('[TWILIO TEST] ✅ Llamada iniciada - SID:', call.sid);
+
+    res.json({
+      success: true,
+      callSid: call.sid,
+      message: 'Llamada iniciada. Te llamaremos en unos segundos.'
+    });
+
+  } catch (error) {
+    console.error('[TWILIO TEST ERROR]', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Error al iniciar llamada'
+    });
+  }
+});
+
+// ========================================
+// ENDPOINT: MANEJAR LLAMADA DE PRUEBA TWILIO
+// ========================================
+app.post('/api/twilio-test-call', async (req, res) => {
+  const callSid = req.body.CallSid;
+  const clientId = req.query.client_id;
+
+  console.log('[TWILIO TEST] Llamada conectada - SID:', callSid);
+  console.log('[TWILIO TEST] Cliente:', clientId);
+
+  // TwiML para conectar el media stream
+  const twiml = `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Connect>
+    <Stream url="wss://${req.headers.host}/media-stream">
+      <Parameter name="callSid" value="${callSid}"/>
+      <Parameter name="clientId" value="${clientId}"/>
+      <Parameter name="isTest" value="true"/>
+    </Stream>
+  </Connect>
+</Response>`;
+
+  res.type('text/xml').send(twiml);
+});
+
+// ========================================
+// ENDPOINT: STATUS CALLBACK TWILIO
+// ========================================
+app.post('/api/twilio-status', (req, res) => {
+  const { CallSid, CallStatus } = req.body;
+  console.log('[TWILIO STATUS]', CallSid, '-', CallStatus);
+  res.sendStatus(200);
+});
+
+// ========================================
 // HEALTH CHECK
 // ========================================
 app.get('/health', (req, res) => {
@@ -246,6 +351,157 @@ const io = new Server(server, {
 });
 
 const testSessions = new Map();
+
+// ========================================
+// WEBSOCKET SERVER PARA TWILIO MEDIA STREAM
+// ========================================
+const WS = require('ws');
+const twilioWss = new WS.Server({ server, path: '/media-stream' });
+
+twilioWss.on('connection', async (twilioWs, req) => {
+  console.log('[TWILIO] 🔌 Cliente Twilio conectado al media stream');
+
+  let openaiWs = null;
+  let callSid = null;
+  let clientId = null;
+  let clientConfig = null;
+  let streamSid = null;
+
+  twilioWs.on('message', async (message) => {
+    try {
+      const msg = JSON.parse(message);
+
+      if (msg.event === 'start') {
+        callSid = msg.start.callSid;
+        streamSid = msg.start.streamSid;
+        clientId = msg.start.customParameters.clientId;
+
+        console.log('[TWILIO] 📞 Stream iniciado - CallSid:', callSid);
+        console.log('[TWILIO] 📞 ClientId:', clientId);
+
+        // Cargar configuración del cliente
+        const { data: config, error } = await supabase
+          .from('johnny_clients')
+          .select('*')
+          .eq('client_id', clientId)
+          .single();
+
+        if (error || !config) {
+          console.error('[TWILIO ERROR] No se pudo cargar configuración');
+          return;
+        }
+
+        clientConfig = config;
+        console.log('[TWILIO] ✅ Config cargada:', config.company_name);
+
+        // Conectar con OpenAI
+        await connectTwilioToOpenAI(clientConfig, twilioWs);
+      }
+
+      if (msg.event === 'media' && openaiWs && openaiWs.readyState === 1) {
+        // Enviar audio de Twilio a OpenAI (formato g711_ulaw)
+        const audioPayload = {
+          type: 'input_audio_buffer.append',
+          audio: msg.media.payload
+        };
+        openaiWs.send(JSON.stringify(audioPayload));
+      }
+
+      if (msg.event === 'stop') {
+        console.log('[TWILIO] 📞 Stream detenido');
+        if (openaiWs) openaiWs.close();
+      }
+
+    } catch (err) {
+      console.error('[TWILIO ERROR] Procesando mensaje:', err);
+    }
+  });
+
+  async function connectTwilioToOpenAI(config, twilioWs) {
+    const url = 'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17';
+
+    openaiWs = new WebSocket(url, {
+      headers: {
+        'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+        'OpenAI-Beta': 'realtime=v1'
+      }
+    });
+
+    openaiWs.on('open', () => {
+      console.log('[TWILIO] ✅ Conectado a OpenAI Realtime API');
+
+      const sessionUpdate = {
+        type: 'session.update',
+        session: {
+          modalities: ['text', 'audio'],
+          instructions: config.sales_script || 'Eres un asistente de ventas amigable.',
+          voice: 'alloy',
+          input_audio_format: 'g711_ulaw',  // Formato de Twilio
+          output_audio_format: 'g711_ulaw', // Formato de Twilio
+          input_audio_transcription: { model: 'whisper-1' },
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 500
+          },
+          temperature: 0.7,
+          max_response_output_tokens: 1000
+        }
+      };
+
+      openaiWs.send(JSON.stringify(sessionUpdate));
+      console.log('[TWILIO] ⚙️ Sesión de OpenAI configurada');
+    });
+
+    openaiWs.on('message', async (data) => {
+      try {
+        const event = JSON.parse(data);
+
+        // Logs de transcripciones
+        if (event.type === 'conversation.item.input_audio_transcription.completed') {
+          console.log('[TWILIO] 👤 Usuario:', event.transcript);
+        }
+
+        if (event.type === 'response.audio_transcript.done') {
+          console.log('[TWILIO] 🤖 Vendedor:', event.transcript);
+        }
+
+        // Enviar audio de OpenAI a Twilio
+        if (event.type === 'response.audio.delta' && event.delta) {
+          const audioPayload = {
+            event: 'media',
+            streamSid: streamSid,
+            media: {
+              payload: event.delta
+            }
+          };
+          twilioWs.send(JSON.stringify(audioPayload));
+        }
+
+      } catch (err) {
+        console.error('[TWILIO ERROR] Procesando evento OpenAI:', err);
+      }
+    });
+
+    openaiWs.on('error', (error) => {
+      console.error('[TWILIO ERROR] OpenAI WebSocket:', error.message);
+    });
+
+    openaiWs.on('close', () => {
+      console.log('[TWILIO] 🔌 Desconectado de OpenAI');
+    });
+  }
+
+  twilioWs.on('close', () => {
+    console.log('[TWILIO] 🔌 Cliente Twilio desconectado');
+    if (openaiWs) openaiWs.close();
+  });
+
+  twilioWs.on('error', (error) => {
+    console.error('[TWILIO ERROR] WebSocket error:', error);
+  });
+});
 
 // ========================================
 // SISTEMA DE COLAS PARA HTTP POLLING
