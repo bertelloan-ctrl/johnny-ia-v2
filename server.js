@@ -13,7 +13,7 @@ const twilioClient = new Twilio(
   process.env.TWILIO_ACCOUNT_SID,
   process.env.TWILIO_AUTH_TOKEN
 );
-const TWILIO_PHONE_NUMBER = process.env.TWILIO_PHONE_NUMBER;
+const TWILIO_PHONE_NUMBER = process.env.TWILIO_NUMBER;
 
 // Habilitar CORS para todas las solicitudes
 app.use(cors());
